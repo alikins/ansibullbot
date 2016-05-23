@@ -18,6 +18,7 @@
 from __future__ import print_function
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -27,6 +28,11 @@ from github import Github
 
 from jinja2 import Environment, FileSystemLoader
 
+DEBUG_LOG_FORMAT = "%(asctime)s [%(name)s %(levelname)s] (%(process)d):%(funcName)s:%(lineno)d - %(message)s"
+logging.basicConfig(level=logging.DEBUG,
+                    format=DEBUG_LOG_FORMAT)
+
+log = logging.getLogger(__name__)
 loader = FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates'))
 environment = Environment(loader=loader, trim_blocks=True)
 
@@ -95,6 +101,8 @@ BOTLIST = [
     'robynbergeron',
 ]
 
+class TriageError(Exception):
+    pass
 
 class PullRequest:
 
@@ -106,12 +114,12 @@ class PullRequest:
         else:
             self.instance = pr
 
-        self.pr_number = self.instance.number
+        self.number = self.instance.number
 
         self.issue = None
         self.pr_filenames = []
-        self.current_pr_labels = []
-        self.desired_pr_labels = []
+        self.current_labels = []
+        self.desired_labels = []
 
         self.current_comments = []
         self.desired_comments = []
@@ -151,8 +159,8 @@ class PullRequest:
 
     def is_labeled_for_interaction(self):
         """Returns True if PR is labeled for interaction"""
-        for current_pr_label in self.get_current_labels():
-            if current_pr_label in MANUAL_INTERACTION_LABELS:
+        for current_label in self.get_current_labels():
+            if current_label in MANUAL_INTERACTION_LABELS:
                 return True
         return False
 
@@ -185,11 +193,11 @@ class PullRequest:
         """Pull the list of labels on this PR and shove them into
         pr_labels.
         """
-        if not self.current_pr_labels:
+        if not self.current_labels:
             labels = self.get_issue().labels
             for label in labels:
-                self.current_pr_labels.append(label.name)
-        return self.current_pr_labels
+                self.current_labels.append(label.name)
+        return self.current_labels
 
     def get_comments(self):
         """Returns all current comments of the PR"""
@@ -237,20 +245,23 @@ class PullRequest:
         """ Adds a comment to the PR using the GitHub API"""
         self.get_issue().create_comment(comment)
 
+class Issue(PullRequest):
+
 
 class Triage:
     def __init__(self, verbose=None, github_user=None, github_pass=None,
                  github_token=None, github_repo=None, pr_number=None,
-                 start_at_pr=None, always_pause=False, force=False):
+                 start_at_pr=None, always_pause=False, force=False, dry_run=False):
         self.verbose = verbose
         self.github_user = github_user
         self.github_pass = github_pass
         self.github_token = github_token
         self.github_repo = github_repo
-        self.pr_number = pr_number
+        self.number = pr_number
         self.start_at_pr = start_at_pr
         self.always_pause = always_pause
         self.force = force
+        self.dry_run = dry_run
 
         self.pull_request = None
         self.maintainers = {}
@@ -617,14 +628,14 @@ class Triage:
                         self.pull_request.add_desired_comment(desired_pr_label)
 
         # unlabel action
-        for current_pr_label in self.pull_request.get_current_labels():
+        for current_label in self.pull_request.get_current_labels():
 
             # some labels we just ignore
-            if current_pr_label in IGNORE_LABELS:
+            if current_label in IGNORE_LABELS:
                 continue
 
             # now check if we need to unlabel
-            if current_pr_label not in resolved_desired_pr_labels:
+            if current_label not in resolved_desired_pr_labels:
                 self.actions['unlabel'].append(current_pr_label)
 
         for boilerplate in self.pull_request.desired_comments:
@@ -632,7 +643,7 @@ class Triage:
             self.debug(msg=comment)
             self.actions['comments'].append(comment)
 
-    def process(self):
+    def process_pr(self):
         """Processes the PR"""
         # clear all actions
         self.actions = {
@@ -643,7 +654,7 @@ class Triage:
         # clear module maintainers
         self.module_maintainers = []
         # print some general infos about the PR to be processed
-        print("\nPR #%s: %s" % (self.pull_request.pr_number,
+        print("\nPR #%s: %s" % (self.pull_request.number,
                                 (self.pull_request.instance.title).encode('ascii','ignore')))
         print("Created at %s" % self.pull_request.instance.created_at)
         print("Updated at %s" % self.pull_request.instance.updated_at)
@@ -665,12 +676,21 @@ class Triage:
 
         self.create_actions()
 
+        self.report()
+        return self.apply_actions()
+
+    def report(self):
         # Print the things we processed
         print("Submitter: %s" % self.pull_request.get_pr_submitter())
         print("Maintainers: %s" % ', '.join(self.get_module_maintainers()))
         print("Current Labels: %s" %
-              ', '.join(self.pull_request.current_pr_labels))
+              ', '.join(self.pull_request.current_labels))
         print("Actions: %s" % self.actions)
+
+    def apply_actions(self):
+        if self.dry_run:
+            print('--dry-run is set so skipping actins')
+            return 0
 
         if (self.actions['newlabel'] or self.actions['unlabel'] or
                 self.actions['comments']):
@@ -680,14 +700,14 @@ class Triage:
                 return
             cont = raw_input("Take recommended actions (y/N/a)? ")
             if cont in ('a', 'A'):
-                sys.exit(0)
+                return 0
             if cont in ('Y', 'y'):
                 self.execute_actions()
         elif self.always_pause:
             print("Skipping, but pause.")
             cont = raw_input("Continue (Y/n/a)? ")
             if cont in ('a', 'A', 'n', 'N'):
-                sys.exit(0)
+                return 0
         else:
             print("Skipping.")
 
@@ -708,10 +728,10 @@ class Triage:
         repo = self._connect().get_repo("ansible/ansible-modules-%s" %
                                         self.github_repo)
 
-        if self.pr_number:
+        if self.number:
             self.pull_request = PullRequest(repo=repo,
-                                            pr_number=self.pr_number)
-            self.process()
+                                            pr_number=self.number)
+            self.process_prs()
         else:
             pulls = repo.get_pulls()
             for pull in pulls:
@@ -720,6 +740,10 @@ class Triage:
                 self.pull_request = PullRequest(repo=repo, pr=pull)
                 self.process()
 
+
+
+class TriageIssue(Triage):
+    pass
 
 def main():
     parser = argparse.ArgumentParser(description="Triage various PR queues "
@@ -745,32 +769,54 @@ def main():
                         help="Always pause between PRs")
     parser.add_argument("--pr", type=int,
                         help="Triage only the specified pr")
+    parser.add_argument("--issue", type=int,
+                        help="Triage only the specified issue")
     parser.add_argument("--start-at", type=int,
                         help="Start triage at the specified pr")
+    parser.add_argument("--dry-run", "-n", action="store_true",
+                        help="Don't change any pull requests.")
     args = parser.parse_args()
 
     if args.pr and args.start_at:
-        print("Error: Mutually exclusive: --start-at and --pr",
-              file=sys.stderr)
-        sys.exit(1)
+        raise TriageError("Error: Mutually exclusive: --start-at and --pr")
 
     if args.force and args.pause:
-        print("Error: Mutually exclusive: --force and --pause",
-              file=sys.stderr)
-        sys.exit(1)
+        raise TriageError("Error: Mutually exclusive: --force and --pause")
 
-    triage = Triage(
-        verbose=args.verbose,
-        github_user=args.gh_user,
-        github_pass=args.gh_pass,
-        github_token=args.gh_token,
-        github_repo=args.repo,
-        pr_number=args.pr,
-        start_at_pr=args.start_at,
-        always_pause=args.pause,
-        force=args.force,
-    )
+    pull_requests = True
+    issues = False
+    if args.pr or pull_requests:
+        triage = Triage(
+            verbose=args.verbose,
+            github_user=args.gh_user,
+            github_pass=args.gh_pass,
+            github_token=args.gh_token,
+            github_repo=args.repo,
+            pr_number=args.pr,
+            start_at_pr=args.start_at,
+            always_pause=args.pause,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
+    if args.issue or issues:
+        triage = TriageIssue(
+            verbose=args.verbose,
+            github_user=args.gh_user,
+            github_pass=args.gh_pass,
+            github_token=args.gh_token,
+            github_repo=args.repo,
+            issue_number=args.issue,
+            start_at=args.start_at,
+            always_pause=args.pause,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
+
     triage.run()
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except TriageError as e:
+        log.exception(e)
+        sys.exit(1)
