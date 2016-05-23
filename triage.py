@@ -169,7 +169,7 @@ class PullRequest:
         while self.instance.mergeable_state == "unknown":
             print("Mergeable state is unknown, trying again...")
             time.sleep(1)
-            self.instance = self.repo.get_pull(self.pr_number)
+            self.instance = self.repo.get_pull(self.number)
             time.sleep(1)
         return self.instance.mergeable_state != "dirty"
 
@@ -186,7 +186,7 @@ class PullRequest:
     def get_issue(self):
         """Gets the issue from the GitHub API"""
         if not self.issue:
-            self.issue = self.repo.get_issue(self.pr_number)
+            self.issue = self.repo.get_issue(self.number)
         return self.issue
 
     def get_current_labels(self):
@@ -217,16 +217,16 @@ class PullRequest:
     def process_mutually_exlusive_labels(self, name=None):
         resolved_name = self.resolve_desired_pr_labels(name)
         if resolved_name in MUTUALLY_EXCLUSIVE_LABELS:
-            for label in self.desired_pr_labels:
+            for label in self.desired_labels:
                 resolved_label = self.resolve_desired_pr_labels(label)
                 if resolved_label in MUTUALLY_EXCLUSIVE_LABELS:
-                    self.desired_pr_labels.remove(label)
+                    self.desired_labels.remove(label)
 
     def add_desired_label(self, name=None):
         """Adds a label to the desired labels list"""
-        if name and name not in self.desired_pr_labels:
+        if name and name not in self.desired_labels:
             self.process_mutually_exlusive_labels(name=name)
-            self.desired_pr_labels.append(name)
+            self.desired_labels.append(name)
 
     def add_desired_comment(self, boilerplate=None):
         """Adds a boilerplate key to the desired comments list"""
@@ -245,8 +245,9 @@ class PullRequest:
         """ Adds a comment to the PR using the GitHub API"""
         self.get_issue().create_comment(comment)
 
-class Issue(PullRequest):
 
+class Issue(PullRequest):
+    pass
 
 class Triage:
     def __init__(self, verbose=None, github_user=None, github_pass=None,
@@ -341,7 +342,7 @@ class Triage:
             return
 
         if ("New Module Pull Request" in body
-            or "new_plugin" in self.pull_request.desired_pr_labels):
+            or "new_plugin" in self.pull_request.desired_labels):
             self.debug(msg="New Module Pull Request")
             return
 
@@ -449,7 +450,7 @@ class Triage:
                            comment_days_old)
 
                 if comment_days_old > 14:
-                    pr_labels = self.pull_request.desired_pr_labels
+                    pr_labels = self.pull_request.desired_labels
 
                     if "core_review" in pr_labels:
                         self.debug(msg="has core_review")
@@ -588,7 +589,7 @@ class Triage:
 
         # create new label and comments action
         resolved_desired_pr_labels = []
-        for desired_pr_label in self.pull_request.desired_pr_labels:
+        for desired_pr_label in self.pull_request.desired_labels:
 
             # Most of the comments are only going to be added if we also add a
             # new label. So they are coupled. That is why we use the
@@ -636,14 +637,14 @@ class Triage:
 
             # now check if we need to unlabel
             if current_label not in resolved_desired_pr_labels:
-                self.actions['unlabel'].append(current_pr_label)
+                self.actions['unlabel'].append(current_label)
 
         for boilerplate in self.pull_request.desired_comments:
             comment = self.render_comment(boilerplate=boilerplate)
             self.debug(msg=comment)
             self.actions['comments'].append(comment)
 
-    def process_pr(self):
+    def process(self):
         """Processes the PR"""
         # clear all actions
         self.actions = {
@@ -731,7 +732,7 @@ class Triage:
         if self.number:
             self.pull_request = PullRequest(repo=repo,
                                             pr_number=self.number)
-            self.process_prs()
+            self.process()
         else:
             pulls = repo.get_pulls()
             for pull in pulls:
