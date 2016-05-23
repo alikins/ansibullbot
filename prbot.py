@@ -11,12 +11,21 @@
 # Useful! https://developer.github.com/v3/pulls/
 # Useful! https://developer.github.com/v3/issues/comments/
 
-import requests, json, yaml, sys, argparse, time, signal
+import argparse
+import json
+import signal
+import sys
+import time
+import urlparse
+
+import requests
+
 
 # Here's a nasty hack to get around the occasional ssl handshake
 # timeout.  Thanks, ssl!
 
 BOT_USER_NAMES = ['gregdek','robynbergeron']
+GITHUB_API_URL = 'https://api.github.com/'
 
 def handler(signum, frame):
     print 'Signal handler called with signal', signum
@@ -25,9 +34,39 @@ def handler(signum, frame):
 # Set up the signal handler
 signal.signal(signal.SIGALRM, handler)
 
+class RepoUrl(object):
+    def __init__(self, gh_api_url=None, gh_org=None, gh_repo=None, state=None, start_at=None):
+        self.start_at = start_at
+        self.state = state
+        self.gh_repo = gh_repo or 'ansible-modules-extras'
+        self.gh_org = gh_org or self.gh_org
+        self.gh_api_url = gh_api_url or GITHUB_API_URL
+        self.url = '%(base_url)s/%(gh_org)s/%(gh_repo)s/pulls' % {'base_url': GITHUB_API_URL,
+                                                                  'gh_org': self.gh_org,
+                                                                  'gh_repo': self.gh_repo}
+        self.url_params = {'state': self.state,
+                           'start_at': self.start_at}
+
+
+class PullRequestParam(object):
+    def __init__(self):
+        self.state = 'open'
+        self.page = 1
+
+
+class PullRequest(object):
+    def __init__(self, gh_org, gh_repo, pr):
+        self.gh_org = gh_org
+        self.gh_repo = gh_repo
+        self.pr = pr
+        self.pr_url = '%(base_url)s/%(gh_org)s/%(gh_repo)s/pulls' % {'base_url': GITHUB_API_URL,
+                                                                     'gh_org': self.gh_org,
+                                                                     'gh_repo': self.gh_repo}
 
 class CliOptions(object):
-    """All of the options that are settable by the Cli"""
+    """All of the options that are settable by the Cli.
+
+    Used by argparse to set options on via the namespace= arg."""
     ghuser = None
     ghpass = None
     ghrepo = None
@@ -37,6 +76,7 @@ class CliOptions(object):
     pr = None
     # FIXME: explain why 9999
     start_at = 9999
+    state = 'open'
     dry_run = False
 
 
@@ -79,31 +119,11 @@ class Cli(object):
                                  help="Only do 'read-only' operations and show the actions that would be run")
         self.args = self.parser.parse_args(namespace=self.options)
 
-
-class PullRequest(object):
-    def __init__(self):
-        self.state = 'open'
-        self.page = 1
-
-
-class BotUserNames(objects):
+class BotUserNames(object):
     """The user names that may be used by the bot."""
     def __init__(self, user_names=None):
         self.user_names = user_names or []
 
-#------------------------------------------------------------------------------------
-# Here's initialization of various things.
-#------------------------------------------------------------------------------------
-repo_url = 'https://api.github.com/repos/ansible/ansible-modules-' + ghrepo + '/pulls'
-
-if args.pr:
-    single_pr = args.pr
-else:
-    single_pr = ''
-
-#------------------------------------------------------------------------------------
-# Here's the boilerplate text.
-#------------------------------------------------------------------------------------
 boilerplate = {
     'shipit': "Thanks again to @{s} for this PR, and thanks @{m} for reviewing. Marking for inclusion.",
     'backport': "Thanks @{s}. All backport requests must be reviewed by the core team, and this can take time. We appreciate your patience.",
@@ -119,15 +139,11 @@ boilerplate = {
     'submitter_second_warning': '@{s} Another friendly reminder: this pull request has been marked as needing your action. If you still believe that this PR applies, and you intend to address the issues with this PR, just let us know in the PR itself and we will keep it open. If we don\'t hear from you within another 14 days, we will close this pull request.'
 }
 
-#------------------------------------------------------------------------------------
-# Here's the triage function. It takes a PR id and does all of the necessary triage
-# stuff.
-#------------------------------------------------------------------------------------
+def triage(urlstring, verbose=None):
+    """Take a PR url and returns defailed PR data from the api."""
 
-def triage(urlstring):
-    #----------------------------------------------------------------------------
-    # Get the more detailed PR data from the API:
-    #----------------------------------------------------------------------------
+    # TODO: replace with logging
+    verbose = verbose or False
     if verbose:
         print "URLSTRING: ", urlstring
 
@@ -597,55 +613,71 @@ def triage(urlstring):
                 except requests.exceptions.RequestException as e:
                     print e
                     sys.exit(1)
-                        
 
 
-#====================================================================================
-# MAIN CODE START, EH?
-#====================================================================================
 
-
-#------------------------------------------------------------------------------------
-# If we're running in single PR mode, run triage on the single PR.
-#------------------------------------------------------------------------------------
-cli = Cli()
-
-if cli.args.single_pr:
-    single_pr_url = "https://api.github.com/repos/ansible/ansible-modules-" + ghrepo + "/pulls/" + single_pr
-    pull_requests = [single_pr_url]
-
-#------------------------------------------------------------------------------------
-# Otherwise, go get all open PRs and run through them.
-#------------------------------------------------------------------------------------
-else:
-    # First, get number of pages using pagination in Link Headers. Thanks 
+def get_pull_requests(session, repo_url, repo_url_params):
+    # First, get number of pages using pagination in Link Headers. Thanks
     # requests library for making this relatively easy!
     signal.alarm(5)
-    r = requests.get(repo_url, params=args, auth=(ghuser,ghpass))
+    r = session.get(repo_url, params=repo_url_params)
     signal.alarm(0)
     lastpage = int(str(r.links['last']['url']).split('=')[-1])
 
     # Set range for 1..2 for testing only
     # for page in range(1,2):
 
-    for page in range(1,lastpage):
+    pull_requests = []
+    skipped_pull_request_numbers = []
+
+    for page in range(1, lastpage):
         pull_args = {'state':'open', 'page':page}
         signal.alarm(5)
-        r = requests.get(repo_url, params=pull_args, auth=(ghuser,ghpass))
+        r = session.get(repo_url, params=pull_args)
         signal.alarm(0)
 
-        #----------------------------------------------------------------------------
-        # For every open PR:
-        #----------------------------------------------------------------------------
-        for shortpull in r.json():
- 
+        open_prs = r.json()
+        for open_pr in open_prs:
+
             # Do some nifty triage!
-            if (int(shortpull['number']) <= int(startat)):
-                triage(shortpull['url'])
+            if (int(open_pr['number']) <= int(repo_url.start_at)):
+                pull_requests.append(open_pr['url'])
             else:
-                print "SKIPPING ", shortpull['number']
+                # FIXME: do we need this?
+                skipped_pull_request_numbers.append(open_pr['number'])
 
+    return get_pull_requests
 
-#====================================================================================
-# That's all, folks!
-#====================================================================================
+def main(args=None):
+    args = args or None
+    cli = Cli()
+
+    # Use a Session just to prepare to port to the github module
+    requests_session = requests.Session(auth=(cli.options.ghuser,
+                                            cli.options.ghpass))
+
+    gh_repo = 'ansible-modules-%s' % cli.options.ghrepo
+
+    # FIXME: replace with github url soon
+    repo_url = RepoUrl(gh_api_url=GITHUB_API_URL,
+                    gh_org='ansible',
+                    gh_repo=gh_repo,
+                    state=cli.options.state,
+                    start_at=cli.options.start_at)
+
+    # If a pr number was given on the cli, triage just it.
+    if cli.options.pr:
+        pull_request = PullRequest(gh_org='ansible',
+                                   gh_repo='ansible-modules-%s' % cli.options.ghrepo,
+                                   pr=cli.options.pr)
+        pull_requests = [pull_request.url]
+    else:
+        pull_requests = get_pull_requests(session=requests_session,
+                                          repo_url=repo_url.url,
+                                          repo_url_params=repo_url.url_params)
+
+    # FIXME: track better error codes
+    return triage(pull_requests)
+
+if __name__ == "__main__":
+    sys.exit(main(args=sys.argv[:]))
