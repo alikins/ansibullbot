@@ -106,11 +106,11 @@ class TriageError(Exception):
 
 class PullRequest:
 
-    def __init__(self, repo, pr_number=None, pr=None):
+    def __init__(self, repo, pr_number=None, number=None, pr=None):
         self.repo = repo
 
         if not pr:
-            self.instance = self.repo.get_pull(pr_number)
+            self.instance = self._get_issue_type_instance(pr_number)
         else:
             self.instance = pr
 
@@ -123,6 +123,9 @@ class PullRequest:
 
         self.current_comments = []
         self.desired_comments = []
+
+    def _get_issue_type_instance(self, number):
+        return self.repo.get_pull(number)
 
     def get_pr_filenames(self):
         """Returns all files related to this PR"""
@@ -247,19 +250,36 @@ class PullRequest:
 
 
 class Issue(PullRequest):
-    pass
+    def _get_issue_type_instance(self, number):
+        return self.repo.get_issue(number)
+
+    # FIXME: do clver stuff here
+    def get_pr_filenames(self):
+        return []
+
+    def pr_contains_new_file(self):
+        return False
+
+    def get_comments(self):
+        """Returns all current comments of the PR"""
+        if not self.current_comments:
+            self.current_comments = self.instance.get_comments().reversed
+        return self.current_comments
+
 
 class Triage:
+    issue_type_class = PullRequest
+
     def __init__(self, verbose=None, github_user=None, github_pass=None,
-                 github_token=None, github_repo=None, pr_number=None,
-                 start_at_pr=None, always_pause=False, force=False, dry_run=False):
+                 github_token=None, github_repo=None, number=None,
+                 start_at=None, always_pause=False, force=False, dry_run=False):
         self.verbose = verbose
         self.github_user = github_user
         self.github_pass = github_pass
         self.github_token = github_token
         self.github_repo = github_repo
-        self.number = pr_number
-        self.start_at_pr = start_at_pr
+        self.number = number
+        self.start_at = start_at
         self.always_pause = always_pause
         self.force = force
         self.dry_run = dry_run
@@ -667,18 +687,21 @@ class Triage:
             self.debug(msg="PR is a work-in-progress")
             self.pull_request.add_desired_label(name="work_in_progress")
         else:
-            self.add_desired_labels_by_maintainers()
-            self.add_desired_labels_by_gitref()
-            # process comments after labels
-            self.process_comments()
-            self.add_desired_labels_for_not_mergeable()
-            self.add_desired_label_by_build_state()
-            self.add_labels_by_issue_type()
+            self.add_labels()
 
         self.create_actions()
 
         self.report()
         return self.apply_actions()
+
+    def add_labels(self):
+        self.add_desired_labels_by_maintainers()
+        self.add_desired_labels_by_gitref()
+        # process comments after labels
+        self.process_comments()
+        self.add_desired_labels_for_not_mergeable()
+        self.add_desired_label_by_build_state()
+        self.add_labels_by_issue_type()
 
     def report(self):
         # Print the things we processed
@@ -724,27 +747,52 @@ class Triage:
             self.debug(msg="API Call comment: " + comment)
             self.pull_request.add_comment(comment=comment)
 
+    def get_all(self, repo):
+        return repo.get_pulls()
+
     def run(self):
         """Starts a triage run"""
         repo = self._connect().get_repo("ansible/ansible-modules-%s" %
                                         self.github_repo)
 
+        issue_type_class = self.issue_type_class
         if self.number:
-            self.pull_request = PullRequest(repo=repo,
-                                            pr_number=self.number)
+            self.pull_request = issue_type_class(repo=repo,
+                                                 pr_number=self.number)
             self.process()
         else:
-            pulls = repo.get_pulls()
+            pulls = self.get_all(repo)
             for pull in pulls:
-                if self.start_at_pr and pull.number > self.start_at_pr:
+                if self.start_at and pull.number > self.start_at:
                     continue
-                self.pull_request = PullRequest(repo=repo, pr=pull)
+                self.pull_request = issue_type_class(repo=repo, pr=pull)
                 self.process()
 
 
-
+# FIXME: move most of logic to base class so we are not stubbing out base class
+# impl to be abstract  (and/or, reverse to inheritance so pr subclasses issue)
 class TriageIssue(Triage):
-    pass
+    issue_type_class = Issue
+
+    def get_all(self, repo):
+        return repo.get_issues()
+
+    def add_labels(self):
+        # self.add_desired_labels_by_maintainers()
+        # self.add_desired_labels_by_gitref()
+        # process comments after labels
+        self.process_comments()
+        # self.add_desired_labels_for_not_mergeable()
+        # self.add_desired_label_by_build_state()
+        self.add_labels_by_issue_type()
+
+    def add_desired_labels_by_namespace(self):
+        pass
+
+    # FIXME: use tbgrep and other tools to guess at what python files are involved in a bug report
+    def _get_maintainers(self):
+        return {}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Triage various PR queues "
@@ -770,8 +818,14 @@ def main():
                         help="Always pause between PRs")
     parser.add_argument("--pr", type=int,
                         help="Triage only the specified pr")
+    parser.add_argument("--prs", action="store_true",
+                        default=False,
+                        help="Triage pull requests.")
     parser.add_argument("--issue", type=int,
                         help="Triage only the specified issue")
+    parser.add_argument("--issues", action="store_true",
+                        default=False,
+                        help="Triage issues.")
     parser.add_argument("--start-at", type=int,
                         help="Start triage at the specified pr")
     parser.add_argument("--dry-run", "-n", action="store_true",
@@ -784,29 +838,30 @@ def main():
     if args.force and args.pause:
         raise TriageError("Error: Mutually exclusive: --force and --pause")
 
-    pull_requests = True
-    issues = False
-    if args.pr or pull_requests:
+    log.debug('args.prs=%s', args.prs)
+    log.debug('args.issue=%s', args.issues)
+
+    if args.pr or args.prs:
         triage = Triage(
             verbose=args.verbose,
             github_user=args.gh_user,
             github_pass=args.gh_pass,
             github_token=args.gh_token,
             github_repo=args.repo,
-            pr_number=args.pr,
-            start_at_pr=args.start_at,
+            number=args.pr,
+            start_at=args.start_at,
             always_pause=args.pause,
             force=args.force,
             dry_run=args.dry_run,
         )
-    if args.issue or issues:
+    if args.issue or args.issues:
         triage = TriageIssue(
             verbose=args.verbose,
             github_user=args.gh_user,
             github_pass=args.gh_pass,
             github_token=args.gh_token,
             github_repo=args.repo,
-            issue_number=args.issue,
+            number=args.issue,
             start_at=args.start_at,
             always_pause=args.pause,
             force=args.force,
