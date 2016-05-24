@@ -713,7 +713,11 @@ class Triage:
 
     def apply_actions(self):
         if self.dry_run:
-            print('--dry-run is set so skipping actins')
+            print('--dry-run is set so skipping actions')
+            log.debug("Would have run the following actions:")
+            for action_type in self.actions:
+                if self.actions[action_type]:
+                    log.debug('action_type=%s action=%s', action_type, self.actions[action_type])
             return 0
 
         if (self.actions['newlabel'] or self.actions['unlabel'] or
@@ -785,6 +789,31 @@ class TriageIssue(Triage):
         # self.add_desired_labels_for_not_mergeable()
         # self.add_desired_label_by_build_state()
         self.add_labels_by_issue_type()
+        # TODO
+        # self.add_desired_version_by_version_string()
+        # self.add_desired_milestone_by_something_or_another()
+        # self.add_desired_cli_label_by_reproducer_info()
+
+    def add_labels_by_issue_type(self):
+        """Adds labels by issue type"""
+        body = self.pull_request.instance.body
+
+        if not body:
+            self.debug(msg="Issue has no description")
+            return
+
+        # TODO: This could be generalized and just use a map of 'string_in_body':'type_of_label'
+        if "Bug Report" in body:
+            self.debug(msg="Bug Report Issue")
+            self.pull_request.add_desired_label(name="bug_report")
+
+        if "Documentation Report" in body:
+            self.debug(msg="Docs Report")
+            self.pull_request.add_desired_label(name="docs_report")
+
+        if "Feature Idea" in body:
+            self.debug(msg="Feature Idea")
+            self.pull_request.add_desired_label(name="feature_idea")
 
     def add_desired_labels_by_namespace(self):
         pass
