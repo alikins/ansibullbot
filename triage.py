@@ -120,6 +120,12 @@ class TriageError(Exception):
 
 # class PullRequest:
 
+class BoilerplateComment(object):
+    def __init__(self, comment):
+        self.comment = comment
+
+class BoilerplateLabel()
+
 class Issue(object):
     # FIXME: need a issue specific map
     alias_labels = ISSUE_ALIAS_LABELS
@@ -212,7 +218,7 @@ class Issue(object):
         resolved_name = self.resolve_labels(name)
         if resolved_name in self.mutually_exclusive_labels:
             for label in self.desired_labels:
-                resolved_label = self.resolve_desired_labels(label)
+                resolved_label = self.resolve_labels(label)
                 if resolved_label in self.mutually_exclusive_labels:
                     self.desired_labels.remove(label)
 
@@ -224,6 +230,10 @@ class Issue(object):
             self.desired_labels.append(name)
 
     # shared
+    def add_desired_comments(self, desired_comments):
+        for desired_comment in desired_comment:
+            self.add_desired_comment(desired_comment)
+
     def add_desired_comment(self, boilerplate=None):
         """Adds a boilerplate key to the desired comments list"""
         if boilerplate and boilerplate not in self.desired_comments:
@@ -314,13 +324,169 @@ class PullRequest(Issue):
         """Returns base ref of PR"""
         return self.instance.base.ref
 
+class CommentIssues(object):
+    def __init__(self, comments, issue, maintainers=None):
+        self.comments = comments
+        self.issue = issue
+        self.maintainers = maintainers or []
+
+    def process(self):
+        for comment in self.comments:
+            self.process_comment(comment)
+
+    def process_comment(self, comment):
+        # Is the last useful comment from a bot user?  Then we've got a
+        # potential timeout case. Let's explore!
+        if comment.user.login not in BOTLIST:
+            return
+
+        self.debug(msg="%s is in botlist: " % comment.user.login)
+
+        today = datetime.today()
+        time_delta = today - comment.created_at
+        comment_days_old = time_delta.days
+
+        self.debug(msg="Days since last bot comment: %s" % comment_days_old)
+
+        if comment_days_old <= 14:
+            return
+
+        # Kind of want a state machine here, and timers that can force transitions
+        pr_labels = self.issue.desired_labels
+
+        desired_comments = []
+        desired_labels = []
+        if "core_review" in pr_labels:
+            self.debug(msg="has core_review")
+            return
+
+        if "pending" not in comment.body:
+            if self.issue.is_labeled_for_interaction():
+                desired_comments.append(boilerplate="submitter_first_warning")
+                self.debug(msg="submitter_first_warning")
+                return
+
+            if ("community_review" in pr_labels and not
+              self.issue.pr_contains_new_file()):
+                self.debug(msg="maintainer_first_warning")
+                desired_comments.append(boilerplate="maintainer_first_warning")
+                return
+
+        # pending in comment.body
+        else:
+            if self.issue.is_labeled_for_interaction():
+                self.debug(msg="submitter_second_warning")
+                desired_comments.append(boilerplate="submitter_second_warning")
+                desired_label.append(name="pending_action")
+                return
+
+            if ("community_review" in pr_labels and
+              "new_plugin" not in pr_labels):
+                self.debug(msg="maintainer_second_warning")
+                self.issue.add_desired_comment(
+                    boilerplate="maintainer_second_warning"
+                )
+                self.issue.add_desired_label(
+                    name="pending_action"
+                )
+                return
+        self.debug(msg="STATUS: no useful state change since last pass"
+                "( %s )" % comment.user.login)
+
 
 class CommentLabels(object):
     def __init__(self, comments, issue, maintainers=None):
         self.comments = comments
         self.issue = issue
         self.maintainers = maintainers or []
-        
+
+    # FIXME, replace with logging
+    def debug(self, *args):
+        pass
+
+    def process(self):
+        """ Processes PR comments for matching criteria for adding labels"""
+        self.debug(msg="--- START Processing Comments:")
+
+        for comment in self.comments:
+            self.process_comment(comment)
+
+        self.debug(msg="--- END Processing Comments")
+
+    def process_comment(self, comment):
+        if (comment.user.login in self.maintainers or
+          comment.user.login.lower() in self.maintainers):
+            self.debug(msg="%s is module maintainer commented on %s." %
+                    (comment.user.login, comment.created_at))
+
+            if ("shipit" in comment.body or "+1" in comment.body or
+              "LGTM" in comment.body):
+                self.debug(msg="...said shipit!")
+                # if maintainer was the submitter:
+                if comment.user.login == self.issue.get_submitter():
+                    self.issue.add_desired_label(name="shipit_owner_pr")
+                else:
+                    self.issue.add_desired_label(name="shipit")
+                break
+
+            elif "needs_revision" in comment.body:
+                self.debug(msg="...said needs_revision!")
+                self.issue.add_desired_label(name="needs_revision")
+                break
+
+            elif "needs_info" in comment.body:
+                self.debug(msg="...said needs_info!")
+                self.issue.add_desired_label(name="needs_info")
+
+            elif "close_me" in comment.body:
+                self.debug(msg="...said close_me!")
+                self.issue.add_desired_label(name="pending_action_close_me")
+                break
+
+        if comment.user.login == self.issue.get_submitter():
+            self.debug(msg="%s is PR submitter commented on %s." %
+                    (comment.user.login, comment.created_at))
+            if "ready_for_review" in comment.body:
+                self.debug(msg="...ready for review!")
+                if "ansible" in self.maintainers:
+                    self.debug(msg="core does the review!")
+                    self.issue.add_desired_label(
+                        name="core_review_existing"
+                    )
+                elif not self.maintainers:
+                    self.debug(msg="community does the review!")
+                    self.issue.add_desired_label(
+                        name="community_review_new"
+                    )
+                else:
+                    self.debug(msg="community does the review but has "
+                            "maintainer")
+                    self.issue.add_desired_label(
+                        name="community_review_existing"
+                    )
+                break
+
+        if (comment.user.login not in BOTLIST and
+          self.is_ansible_member(comment.user.login)):
+
+            self.debug(msg="%s is a ansible member" % comment.user.login)
+
+            if ("shipit" in comment.body or "+1" in comment.body or
+              "LGTM" in comment.body):
+                self.debug(msg="...said shipit!")
+                self.issue.add_desired_label(name="shipit")
+                break
+
+            elif "needs_revision" in comment.body:
+                self.debug(msg="...said needs_revision!")
+                self.issue.add_desired_label(name="needs_revision")
+                break
+
+            elif "needs_info" in comment.body:
+                self.debug(msg="...said needs_info!")
+                self.issue.add_desired_label(name="needs_info")
+                break
+
 
 class TriageIssue:
     issue_type_class = Issue
@@ -416,7 +582,7 @@ class TriageIssue:
             # back or alternatively the label we gave as input
             # e.g. label: community_review_existing -> community_review
             # e.g. label: community_review -> community_review
-            resolved_desired_label = self.issue.resolve_desired_labels(desired_label)
+            resolved_desired_label = self.issue.resolve_labels(desired_label)
 
             # If we didn't get back the same, it means we must also add a
             # comment for this label
@@ -534,7 +700,7 @@ class TriageIssue:
 
     def report(self):
         # Print the things we processed
-        print("Submitter: %s" % self.issue.get_pr_submitter())
+        print("Submitter: %s" % self.issue.get_submitter())
         print("Maintainers: %s" % ', '.join(self.get_module_maintainers()))
         print("Current Labels: %s" %
               ', '.join(self.issue.current_labels))
@@ -716,149 +882,16 @@ class TriagePullRequest(TriageIssue):
         self.add_labels_by_issue_type()
 
     def process_comments(self):
-        """ Processes PR comments for matching criteria for adding labels"""
-        module_maintainers = self.get_module_maintainers()
-        comments = self.get_comments()
+        comment_issues = CommentIssues(comments=self.get_comments(),
+                                       issue=self.issue,
+                                       maintainers=self.get_module_maintainers())
 
-        self.debug(msg="--- START Processing Comments:")
+        comment_labels = CommentLabels(comments=self.get_comments(),
+                                       issue=self.issue,
+                                       maintainers=self.get_module_maintainers())
+        comment_issues.process()
+        comment_labels.process()
 
-        for comment in comments:
-
-            # Is the last useful comment from a bot user?  Then we've got a
-            # potential timeout case. Let's explore!
-            if comment.user.login in BOTLIST:
-
-                self.debug(msg="%s is in botlist: " % comment.user.login)
-
-                today = datetime.today()
-                time_delta = today - comment.created_at
-                comment_days_old = time_delta.days
-
-                self.debug(msg="Days since last bot comment: %s" %
-                           comment_days_old)
-
-                if comment_days_old > 14:
-                    # Kind of want a state machine here, and timers that can force transitions
-                    pr_labels = self.issue.desired_labels
-
-                    if "core_review" in pr_labels:
-                        self.debug(msg="has core_review")
-                        break
-
-                    if "pending" not in comment.body:
-                        if self.issue.is_labeled_for_interaction():
-                            self.issue.add_desired_comment(
-                                boilerplate="submitter_first_warning"
-                            )
-                            self.debug(msg="submitter_first_warning")
-                            break
-                        if ("community_review" in pr_labels and not
-                                self.issue.pr_contains_new_file()):
-                            self.debug(msg="maintainer_first_warning")
-                            self.issue.add_desired_comment(
-                                boilerplate="maintainer_first_warning"
-                            )
-                            break
-
-                    # pending in comment.body
-                    else:
-                        if self.issue.is_labeled_for_interaction():
-                            self.debug(msg="submitter_second_warning")
-                            self.issue.add_desired_comment(
-                                boilerplate="submitter_second_warning"
-                            )
-                            self.issue.add_desired_label(
-                                name="pending_action"
-                            )
-                            break
-                        if ("community_review" in pr_labels and
-                          "new_plugin" not in pr_labels):
-                            self.debug(msg="maintainer_second_warning")
-                            self.issue.add_desired_comment(
-                                boilerplate="maintainer_second_warning"
-                            )
-                            self.issue.add_desired_label(
-                                name="pending_action"
-                            )
-                            break
-                self.debug(msg="STATUS: no useful state change since last pass"
-                           "( %s )" % comment.user.login)
-                break
-
-            if (comment.user.login in module_maintainers or
-              comment.user.login.lower() in module_maintainers):
-                self.debug(msg="%s is module maintainer commented on %s." %
-                           (comment.user.login, comment.created_at))
-
-                if ("shipit" in comment.body or "+1" in comment.body or
-                  "LGTM" in comment.body):
-                    self.debug(msg="...said shipit!")
-                    # if maintainer was the submitter:
-                    if comment.user.login == self.issue.get_submitter():
-                        self.issue.add_desired_label(name="shipit_owner_pr")
-                    else:
-                        self.issue.add_desired_label(name="shipit")
-                    break
-
-                elif "needs_revision" in comment.body:
-                    self.debug(msg="...said needs_revision!")
-                    self.issue.add_desired_label(name="needs_revision")
-                    break
-
-                elif "needs_info" in comment.body:
-                    self.debug(msg="...said needs_info!")
-                    self.issue.add_desired_label(name="needs_info")
-
-                elif "close_me" in comment.body:
-                    self.debug(msg="...said close_me!")
-                    self.issue.add_desired_label(name="pending_action_close_me")
-                    break
-
-            if comment.user.login == self.issue.get_submitter():
-                self.debug(msg="%s is PR submitter commented on %s." %
-                           (comment.user.login, comment.created_at))
-                if "ready_for_review" in comment.body:
-                    self.debug(msg="...ready for review!")
-                    if "ansible" in module_maintainers:
-                        self.debug(msg="core does the review!")
-                        self.issue.add_desired_label(
-                            name="core_review_existing"
-                        )
-                    elif not module_maintainers:
-                        self.debug(msg="community does the review!")
-                        self.issue.add_desired_label(
-                            name="community_review_new"
-                        )
-                    else:
-                        self.debug(msg="community does the review but has "
-                                   "maintainer")
-                        self.issue.add_desired_label(
-                            name="community_review_existing"
-                        )
-                    break
-
-            if (comment.user.login not in BOTLIST and
-              self.is_ansible_member(comment.user.login)):
-
-                self.debug(msg="%s is a ansible member" % comment.user.login)
-
-                if ("shipit" in comment.body or "+1" in comment.body or
-                  "LGTM" in comment.body):
-                    self.debug(msg="...said shipit!")
-                    self.issue.add_desired_label(name="shipit")
-                    break
-
-                elif "needs_revision" in comment.body:
-                    self.debug(msg="...said needs_revision!")
-                    self.issue.add_desired_label(name="needs_revision")
-                    break
-
-                elif "needs_info" in comment.body:
-                    self.debug(msg="...said needs_info!")
-                    self.issue.add_desired_label(name="needs_info")
-                    break
-
-        self.debug(msg="--- END Processing Comments")
 
     def add_labels_by_issue_type(self):
         """Adds labels by issue type"""
