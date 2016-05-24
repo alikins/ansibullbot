@@ -42,7 +42,7 @@ environment = Environment(loader=loader, trim_blocks=True)
 
 # A dict of alias labels. It is used for coupling a template (comment) with a
 # label.
-ALIAS_LABELS = {
+PR_ALIAS_LABELS = {
     'core_review': [
         'core_review_existing'
     ],
@@ -63,6 +63,9 @@ ALIAS_LABELS = {
     ]
 }
 
+ISSUE_ALIAS_LABELS = {}
+
+
 MAINTAINERS_FILES = {
     'core': "MAINTAINERS-CORE.txt",
     'extras': "MAINTAINERS-EXTRAS.txt",
@@ -76,13 +79,15 @@ MODULE_NAMESPACE_LABELS = {
 }
 
 # We don't remove any of these labels unless forced
-MUTUALLY_EXCLUSIVE_LABELS = [
+PR_MUTUALLY_EXCLUSIVE_LABELS = [
     "shipit",
     "needs_revision",
     "needs_info",
     "community_review",
     "core_review",
 ]
+
+ISSUE_MUTUALLY_EXCLUSIVE_LABELS = []
 
 # Static labels, manually added
 IGNORE_LABELS = [
@@ -95,10 +100,12 @@ IGNORE_LABELS = [
 ]
 
 # We warn for human interaction
-MANUAL_INTERACTION_LABELS = [
+PR_MANUAL_INTERACTION_LABELS = [
     "needs_revision",
     "needs_info",
 ]
+
+ISSUE_MANUAL_INTERACTION_LABELS = []
 
 BOTLIST = [
     'gregdek',
@@ -108,20 +115,21 @@ BOTLIST = [
 class TriageError(Exception):
     pass
 
-class PullRequest:
+# class PullRequest:
 
-    def __init__(self, repo, pr_number=None, number=None, pr=None):
+class Issue(object):
+    # FIXME: need a issue specific map
+    alias_labels = ISSUE_ALIAS_LABELS
+    mutually_exclusive_labels = ISSUE_MUTUALLY_EXCLUSIVE_LABELS
+    manual_interaction_labels = ISSUE_MANUAL_INTERACTION_LABELS
+
+    def __init__(self, repo, number=None):
         self.repo = repo
 
-        if not pr:
-            self.instance = self._get_issue_type_instance(pr_number)
-        else:
-            self.instance = pr
+        self.instance = self._get_issue_type_instance(number)
 
         self.number = self.instance.number
 
-        self.issue = None
-        self.pr_filenames = []
         self.current_labels = []
         self.desired_labels = []
 
@@ -129,7 +137,106 @@ class PullRequest:
         self.desired_comments = []
 
     def _get_issue_type_instance(self, number):
-        return self.repo.get_pull(number)
+        return self.repo.get_issue(number)
+
+    # shared
+    def get_pr_submitter(self):
+        """Returns the PR submitter"""
+        return self.instance.user.login
+
+    # shared
+    def is_labeled_for_interaction(self):
+        """Returns True if PR is labeled for interaction"""
+        for current_label in self.get_current_labels():
+            if current_label in self.manual_interaction_labels:
+                return True
+        return False
+
+    # sorta shared
+    def get_issue(self):
+        """Gets the issue from the GitHub API"""
+        if not self.issue:
+            self.issue = self.repo.get_issue(self.number)
+        return self.issue
+
+    # shared
+    def get_current_labels(self):
+        """Pull the list of labels on this PR and shove them into
+        pr_labels.
+        """
+        if not self.current_labels:
+            labels = self.get_issue().labels
+            for label in labels:
+                self.current_labels.append(label.name)
+        return self.current_labels
+
+    # shared
+    def get_comments(self):
+        """Returns all current comments of the PR"""
+        if not self.current_comments:
+            self.current_comments = self.instance.get_issue_comments().reversed
+        return self.current_comments
+
+    # shared
+    def resolve_labels(self, desired_label):
+        """Resolves boilerplate the key labels to labels using an
+        alias dict
+        """
+        for resolved_desired_label, aliases in self.alias_labels.iteritems():
+            if desired_label in aliases:
+                return resolved_desired_label
+        return desired_label
+
+    # shared
+    def process_mutually_exlusive_labels(self, name=None):
+        resolved_name = self.resolve_labels(name)
+        if resolved_name in self.mutually_exclusive_labels:
+            for label in self.desired_labels:
+                resolved_label = self.resolve_desired_labels(label)
+                if resolved_label in self.mutually_exclusive_labels:
+                    self.desired_labels.remove(label)
+
+    # shared
+    def add_desired_label(self, name=None):
+        """Adds a label to the desired labels list"""
+        if name and name not in self.desired_labels:
+            self.process_mutually_exlusive_labels(name=name)
+            self.desired_labels.append(name)
+
+    # shared
+    def add_desired_comment(self, boilerplate=None):
+        """Adds a boilerplate key to the desired comments list"""
+        if boilerplate and boilerplate not in self.desired_comments:
+            self.desired_comments.append(boilerplate)
+
+    # shared
+    def add_label(self, label=None):
+        """Adds a label to the PR using the GitHub API"""
+        self.get_issue().add_to_labels(label)
+
+    # shared
+    def remove_label(self, label=None):
+        """Removes a label from the PR using the GitHub API"""
+        self.get_issue().remove_from_labels(label)
+
+    # shared
+    def add_comment(self, comment=None):
+        """ Adds a comment to the PR using the GitHub API"""
+        self.get_issue().create_comment(comment)
+
+
+class PullRequest(Issue):
+    alias_labels = PR_ALIAS_LABELS
+
+    def __init__(self, repo, number=None, pr=None):
+        super(PullRequest, self).__init__(repo=repo, number=number)
+        self.issue = None
+        self.pr_filenames = []
+
+        if not pr:
+            self.instance = self._get_issue_type_instance(number)
+        else:
+            self.instance = pr
 
     def get_pr_filenames(self):
         """Returns all files related to this PR"""
@@ -153,21 +260,10 @@ class PullRequest:
                 return build_status
         return None
 
-    def get_pr_submitter(self):
-        """Returns the PR submitter"""
-        return self.instance.user.login
-
     def pr_contains_new_file(self):
         """Return True if PR contains new files"""
         for pr_file in self.instance.get_files():
             if pr_file.status == "added":
-                return True
-        return False
-
-    def is_labeled_for_interaction(self):
-        """Returns True if PR is labeled for interaction"""
-        for current_label in self.get_current_labels():
-            if current_label in MANUAL_INTERACTION_LABELS:
                 return True
         return False
 
@@ -190,70 +286,8 @@ class PullRequest:
         """Returns base ref of PR"""
         return self.instance.base.ref
 
-    def get_issue(self):
-        """Gets the issue from the GitHub API"""
-        if not self.issue:
-            self.issue = self.repo.get_issue(self.number)
-        return self.issue
 
-    def get_current_labels(self):
-        """Pull the list of labels on this PR and shove them into
-        pr_labels.
-        """
-        if not self.current_labels:
-            labels = self.get_issue().labels
-            for label in labels:
-                self.current_labels.append(label.name)
-        return self.current_labels
-
-    def get_comments(self):
-        """Returns all current comments of the PR"""
-        if not self.current_comments:
-            self.current_comments = self.instance.get_issue_comments().reversed
-        return self.current_comments
-
-    def resolve_desired_pr_labels(self, desired_pr_label):
-        """Resolves boilerplate the key labels to labels using an
-        alias dict
-        """
-        for resolved_desired_pr_label, aliases in ALIAS_LABELS.iteritems():
-            if desired_pr_label in aliases:
-                return resolved_desired_pr_label
-        return desired_pr_label
-
-    def process_mutually_exlusive_labels(self, name=None):
-        resolved_name = self.resolve_desired_pr_labels(name)
-        if resolved_name in MUTUALLY_EXCLUSIVE_LABELS:
-            for label in self.desired_labels:
-                resolved_label = self.resolve_desired_pr_labels(label)
-                if resolved_label in MUTUALLY_EXCLUSIVE_LABELS:
-                    self.desired_labels.remove(label)
-
-    def add_desired_label(self, name=None):
-        """Adds a label to the desired labels list"""
-        if name and name not in self.desired_labels:
-            self.process_mutually_exlusive_labels(name=name)
-            self.desired_labels.append(name)
-
-    def add_desired_comment(self, boilerplate=None):
-        """Adds a boilerplate key to the desired comments list"""
-        if boilerplate and boilerplate not in self.desired_comments:
-            self.desired_comments.append(boilerplate)
-
-    def add_label(self, label=None):
-        """Adds a label to the PR using the GitHub API"""
-        self.get_issue().add_to_labels(label)
-
-    def remove_label(self, label=None):
-        """Removes a label from the PR using the GitHub API"""
-        self.get_issue().remove_from_labels(label)
-
-    def add_comment(self, comment=None):
-        """ Adds a comment to the PR using the GitHub API"""
-        self.get_issue().create_comment(comment)
-
-
-class Issue(PullRequest):
+class FooIssue(PullRequest):
     def _get_issue_type_instance(self, number):
         return self.repo.get_issue(number)
 
@@ -271,7 +305,7 @@ class Issue(PullRequest):
         return self.current_comments
 
 
-class Triage:
+class TriageIssue:
     issue_type_class = PullRequest
 
     def __init__(self, verbose=None, github_user=None, github_pass=None,
@@ -331,12 +365,14 @@ class Triage:
                             self.module_maintainers.extend(maintainers)
         return self.module_maintainers
 
+    # could be shared
     def keep_current_main_labels(self):
         current_labels = self.pull_request.get_current_labels()
         for current_label in current_labels:
-            if current_label in MUTUALLY_EXCLUSIVE_LABELS:
+            if current_label in self.pull_request.mutually_exclusive_labels:
                 self.pull_request.add_desired_label(name=current_label)
 
+    # shared
     def is_ansible_member(self, login):
         user = self._connect().get_user(login)
         return self._connect().get_organization("ansible").has_in_members(user)
@@ -451,10 +487,14 @@ class Triage:
                 name="community_review_existing"
             )
 
+    # could be shared
+    def get_comments(self):
+        return self.pull_request.get_comments()
+
     def process_comments(self):
         """ Processes PR comments for matching criteria for adding labels"""
         module_maintainers = self.get_module_maintainers()
-        comments = self.pull_request.get_comments()
+        comments = self.get_comments()
 
         self.debug(msg="--- START Processing Comments:")
 
@@ -474,6 +514,7 @@ class Triage:
                            comment_days_old)
 
                 if comment_days_old > 14:
+                    # Kind of want a state machine here, and timers that can force transitions
                     pr_labels = self.pull_request.desired_labels
 
                     if "core_review" in pr_labels:
@@ -777,9 +818,13 @@ class Triage:
                 self.process()
 
 
+class TriagePullRequest(TriageIssue):
+    issue_type_class = PullRequest
+
+
 # FIXME: move most of logic to base class so we are not stubbing out base class
 # impl to be abstract  (and/or, reverse to inheritance so pr subclasses issue)
-class TriageIssue(Triage):
+class NotTriageIssue(Triage):
     issue_type_class = Issue
 
     def get_all(self, repo):
