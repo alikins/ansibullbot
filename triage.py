@@ -26,6 +26,10 @@ from datetime import datetime
 
 from github import Github
 
+# traceback finder. 'pip install tbgrep'
+# https://github.com/lmacken/tbgrep
+import tbgrep
+
 from jinja2 import Environment, FileSystemLoader
 
 DEBUG_LOG_FORMAT = "%(asctime)s [%(name)s %(levelname)s] (%(process)d):%(funcName)s:%(lineno)d - %(message)s"
@@ -814,6 +818,20 @@ class TriageIssue(Triage):
         if "Feature Idea" in body:
             self.debug(msg="Feature Idea")
             self.pull_request.add_desired_label(name="feature_idea")
+
+        if self.find_tracebacks(body):
+            self.debug(msg="Traceback found")
+            self.pull_request.add_desired_label(name="traceback")
+
+        # search for playbooks or yaml?
+        # search for os versions
+        # need a 'ansible --version'  parser... ;-<
+
+    def find_tracebacks(self, body):
+        tracebacks = tbgrep.tracebacks_from_lines(body.splitlines())
+        for traceback in tracebacks:
+            log.debug('TRACEBACK=%s', traceback)
+        return tracebacks
 
     def add_desired_labels_by_namespace(self):
         pass
