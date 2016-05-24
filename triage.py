@@ -212,7 +212,7 @@ class Issue(object):
         resolved_name = self.resolve_labels(name)
         if resolved_name in self.mutually_exclusive_labels:
             for label in self.desired_labels:
-                resolved_label = self.resolve_desired_labels(label)
+                resolved_label = self.resolve_labels(label)
                 if resolved_label in self.mutually_exclusive_labels:
                     self.desired_labels.remove(label)
 
@@ -315,13 +315,6 @@ class PullRequest(Issue):
         return self.instance.base.ref
 
 
-class CommentLabels(object):
-    def __init__(self, comments, issue, maintainers=None):
-        self.comments = comments
-        self.issue = issue
-        self.maintainers = maintainers or []
-        
-
 class TriageIssue:
     issue_type_class = Issue
 
@@ -393,7 +386,7 @@ class TriageIssue:
         if not maintainers:
             maintainers = ['ansible/core']
 
-        submitter = self.issue.get_pr_submitter()
+        submitter = self.issue.get_submitter()
 
         template = environment.get_template('%s.j2' % boilerplate)
         comment = template.render(maintainer=maintainers, submitter=submitter)
@@ -416,7 +409,7 @@ class TriageIssue:
             # back or alternatively the label we gave as input
             # e.g. label: community_review_existing -> community_review
             # e.g. label: community_review -> community_review
-            resolved_desired_label = self.issue.resolve_desired_labels(desired_label)
+            resolved_desired_label = self.issue.resolve_labels(desired_label)
 
             # If we didn't get back the same, it means we must also add a
             # comment for this label
@@ -458,6 +451,72 @@ class TriageIssue:
             self.debug(msg=comment)
             self.actions['comments'].append(comment)
 
+    def process_comments(self):
+        """ Processes PR comments for matching criteria for adding labels"""
+        module_maintainers = self.get_module_maintainers()
+        comments = self.get_comments()
+
+        self.debug(msg="--- START Processing Comments:")
+
+        # TODO: check for tracebacks
+        #       check for reference to other bug trackers
+
+        # split into methods ala self.add_labels_by_gitref
+        for comment in comments:
+
+            # Is the last useful comment from a bot user?  Then we've got a
+            # potential timeout case. Let's explore!
+            if comment.user.login in BOTLIST:
+
+                self.debug(msg="%s is in botlist: " % comment.user.login)
+
+                today = datetime.today()
+                time_delta = today - comment.created_at
+                comment_days_old = time_delta.days
+
+                self.debug(msg="Days since last bot comment: %s" %
+                           comment_days_old)
+
+                # TODO: something useful
+                if comment_days_old > 14:
+                    pass
+
+                self.debug(msg="STATUS: no useful state change since last pass"
+                           "( %s )" % comment.user.login)
+                break
+
+            if (comment.user.login in module_maintainers or
+              comment.user.login.lower() in module_maintainers):
+                self.debug(msg="%s is module maintainer commented on %s." %
+                           (comment.user.login, comment.created_at))
+
+                # Look for 'fixed in', 'regression' 'dupe'
+
+                if "needs_info" in comment.body:
+                    self.debug(msg="...said needs_info!")
+                    self.issue.add_desired_label(name="needs_info")
+
+                if "close_me" in comment.body:
+                    self.debug(msg="...said close_me!")
+                    self.issue.add_desired_label(name="pending_action_close_me")
+                    break
+
+            if comment.user.login == self.issue.get_submitter():
+                self.debug(msg="%s is Issue submitter commented on %s." %
+                           (comment.user.login, comment.created_at))
+
+            if (comment.user.login not in BOTLIST and
+              self.is_ansible_member(comment.user.login)):
+
+                self.debug(msg="%s is a ansible member" % comment.user.login)
+
+                if "needs_info" in comment.body:
+                    self.debug(msg="...said needs_info!")
+                    self.issue.add_desired_label(name="needs_info")
+                    break
+
+        self.debug(msg="--- END Processing Comments")
+
     def add_labels(self):
         # process comments after labels
         self.process_comments()
@@ -468,7 +527,10 @@ class TriageIssue:
         # self.add_desired_cli_label_by_reproducer_info()
 
     def add_desired_labels_by_namespace(self):
-        """Adds labels regarding module namespaces"""
+        """Adds labels regarding module namespaces.
+
+        Note: For Issues, there are no filenames so this is a no op"""
+
         for filename in self.issue.get_filenames():
             namespace = filename.split('/')[0]
             for key, value in self.module_namespace_labels.iteritems():
@@ -532,9 +594,10 @@ class TriageIssue:
         # search for os versions
         # need a 'ansible --version'  parser... ;-<
 
+    # TODO: repr/str
     def report(self):
         # Print the things we processed
-        print("Submitter: %s" % self.issue.get_pr_submitter())
+        print("Submitter: %s" % self.issue.get_submitter())
         print("Maintainers: %s" % ', '.join(self.get_module_maintainers()))
         print("Current Labels: %s" %
               ', '.join(self.issue.current_labels))
