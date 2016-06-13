@@ -395,7 +395,9 @@ class Maintainers(object):
                 maintainers[owner_space] = maintainers_string.split(' ')
         return maintainers
 
-
+# TODO: replace with a state machine
+# shortterm goal is just pulling out all the logic that is different between
+# TriageIssue/TriagePullRequest
 class BaseProcessText(object):
     """Process list of comments for actionable info."""
     def __init__(self, issue=None, maintainers=None, team_members=None):
