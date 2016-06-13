@@ -47,6 +47,7 @@ log = logging.getLogger(__name__)
 loader = FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates'))
 environment = Environment(loader=loader, trim_blocks=True)
 
+TEAM = 'ansible'
 # A dict of alias labels. It is used for coupling a template (comment) with a
 # label.
 PR_ALIAS_LABELS = {
@@ -395,7 +396,166 @@ class Maintainers(object):
         return maintainers
 
 
-# TODO: Could also use a base super class here
+class BaseProcessText(object):
+    """Process list of comments for actionable info."""
+    def __init__(self, issue=None, maintainers=None, team_members=None):
+        # TODO: all of this is really info only needed in some comment processors
+        self.extractors = []
+        self.maintainers = maintainers or {}
+        self.issue = issue
+        self.module_maintainers = self.maintainers.for_issue(self.issue)
+        self.team_members = team_members
+        self.tracebacks = []
+
+    # TODO: could just be module methods, or something this has-a
+    def find_tracebacks(self, body):
+        tbs = find_traceback.find_tracebacks(body)
+        self.tracebacks.extend(tbs)
+        log.debug('find_tracebacks: %s', tbs)
+        if tbs:
+            return True
+        return False
+
+    def find_py_files(self, body):
+        py_file_re = r"""ansible(\S*?\.py)[\s+?:\\\"]"""
+        matches = re.findall(py_file_re, body, flags=re.M)
+        log.debug("find_py_files matches=%s", matches)
+        if matches:
+            print(body)
+            return True
+        return False
+
+class ProcessComments(BaseProcessText):
+    def process(self, comments):
+        """ Processes PR comments for matching criteria for adding labels"""
+
+        log.debug("--- START Processing Comments:")
+
+        # TODO: check for tracebacks
+        #       check for reference to other bug trackers
+
+        desired_labels = []
+        # split into methods ala self.add_labels_by_gitref
+        for comment in comments:
+            # TODO: accumulate actions
+            desired_labels += self.process_comment(comment)
+
+        log.debug("--- END Processing Comments")
+        return desired_labels
+
+
+class IssueProcessComments(ProcessComments):
+
+    def process_comment(self, comment):
+        # Is the last useful comment from a bot user?  Then we've got a
+        # potential timeout case. Let's explore!
+        desired_labels = []
+        if comment.user.login in BOTLIST:
+
+            log.debug("%s is in botlist: ", comment.user.login)
+
+            today = datetime.today()
+            time_delta = today - comment.created_at
+            comment_days_old = time_delta.days
+
+            log.debug("Days since last bot comment: %s",
+                      comment_days_old)
+
+            # TODO: something useful
+            if comment_days_old > 14:
+                pass
+
+            log.debug("STATUS: no useful state change since last pass ( %s )", comment.user.login)
+            return desired_labels
+
+        if (comment.user.login in self.module_maintainers or
+          comment.user.login.lower() in self.module_maintainers):
+            log.debug("%s is module maintainer commented on %s.",
+                      comment.user.login, comment.created_at)
+
+            # Look for 'fixed in', 'regression' 'dupe'
+
+            if "needs_info" in comment.body:
+                log.debug("...said needs_info!")
+                desired_labels.append("needs_info")
+
+            if "close_me" in comment.body:
+                log.debug("...said close_me!")
+                desired_labels.append("pending_action_close_me")
+                return desired_labels
+
+        if comment.user.login == self.issue.get_submitter():
+            log.debug("%s is Issue submitter commented on %s.",
+                      comment.user.login, comment.created_at)
+
+        if (comment.user.login not in BOTLIST and
+          comment.user.login in self.team_members):
+
+            log.debug("%s is a ansible member",
+                      comment.user.login)
+
+            if "needs_info" in comment.body:
+                log.debug("...said needs_info!")
+                desired_labels.append("needs_info")
+                return desired_labels
+
+        if self.find_tracebacks(comment.body):
+            log.debug("found tracebacks in comment")
+            desired_labels.append("traceback")
+
+        if self.find_py_files(comment.body):
+            log.debug("found py files in comment")
+
+        log.debug("--- END Processing Comment")
+        return desired_labels
+
+class IssueProcessBody(BaseProcessText):
+    def process(self):
+        """ Processes PR comments for matching criteria for adding labels"""
+
+        log.debug("--- START Processing Issue body:")
+
+        # TODO: check for tracebacks
+        #       check for reference to other bug trackers
+
+        desired_labels = []
+        # split into methods ala self.add_labels_by_gitref
+        desired_labels += self.process_body(self.issue.instance.body)
+
+        log.debug("--- END Processing issue body")
+        return desired_labels
+
+    def process_body(self, body):
+        desired_labels = []
+        if not body:
+            log.debug("Issue has no description")
+            return desired_labels
+
+        # TODO: This could be generalized and just use a map of 'string_in_body':'type_of_label'
+        if "Bug Report" in body:
+            log.debug("Bug Report Issue")
+            desired_labels.append("bug_report")
+
+        if "Documentation Report" in body:
+            log.debug("Docs Report")
+            desired_labels.append("docs_report")
+
+        if "Feature Idea" in body:
+            log.debug("Feature Idea")
+            desired_labels.append("feature_idea")
+
+        if self.find_tracebacks(body):
+            log.debug("Traceback found")
+            desired_labels.append("traceback")
+
+        if self.find_py_files(body):
+            log.debug("python file found")
+
+        # search for playbooks or yaml?
+        # search for os versions
+        # need a 'ansible --version'  parser... ;-<
+        return desired_labels
+
 
 class BaseTriageIssue(object):
     issue_type_class = Issue
@@ -403,7 +563,7 @@ class BaseTriageIssue(object):
     def __init__(self, verbose=None, github_user=None, github_pass=None,
                  github_token=None, github_repo=None, number=None,
                  start_at=None, always_pause=False, force=False,
-                 dry_run=False, maintainers=None):
+                 dry_run=False, maintainers=None, team=None):
         self.verbose = verbose
         self.github_user = github_user
         self.github_pass = github_pass
@@ -417,6 +577,7 @@ class BaseTriageIssue(object):
 
         self.issue = None
 
+        self.team = team
         self.maintainers = maintainers
         self.tracebacks = []
 
@@ -446,10 +607,13 @@ class BaseTriageIssue(object):
             if current_label in self.issue.mutually_exclusive_labels:
                 self.issue.add_desired_label(name=current_label)
 
+    def get_team_members(self):
+        return self._connect().get_organization(self.team).get_members()
+
     # shared
-    def is_ansible_member(self, login):
+    def is_team_member(self, login):
         user = self._connect().get_user(login)
-        return self._connect().get_organization("ansible").has_in_members(user)
+        return self._connect().get_organization(self.team).has_in_members(user)
 
     def get_all(self, repo):
         return repo.get_issues()
@@ -657,11 +821,22 @@ class BaseTriageIssue(object):
 class TriageIssue(BaseTriageIssue):
     issue_type_class = Issue
 
+    # Need to setup a IssueProcessComments in init.
+
     def add_labels(self):
         # process comments after labels
-        self.process_comments()
+        comment_processor = IssueProcessComments(issue=self.issue,
+                                                 maintainers=self.maintainers,
+                                                 team_members=self.get_team_members())
+        desired_labels = comment_processor.process(self.get_comments())
+
+        desired_labels += self.add_labels_by_issue_text()
+
+        for desired_label in desired_labels:
+            self.issue.add_desired_label(name=desired_label)
+
         self.process_events()
-        self.add_labels_by_issue_type()
+
         # TODO
         # self.add_desired_version_by_version_string()
         # self.add_desired_milestone_by_something_or_another()
@@ -678,127 +853,13 @@ class TriageIssue(BaseTriageIssue):
                 if key == namespace:
                     self.issue.add_desired_label(value)
 
-    def add_labels_by_issue_type(self):
-        """Adds labels by issue type"""
-        body = self.issue.instance.body
-
-        if not body:
-            self.debug(msg="Issue has no description")
-            return
-
-        # TODO: This could be generalized and just use a map of 'string_in_body':'type_of_label'
-        if "Bug Report" in body:
-            self.debug(msg="Bug Report Issue")
-            self.issue.add_desired_label(name="bug_report")
-
-        if "Documentation Report" in body:
-            self.debug(msg="Docs Report")
-            self.issue.add_desired_label(name="docs_report")
-
-        if "Feature Idea" in body:
-            self.debug(msg="Feature Idea")
-            self.issue.add_desired_label(name="feature_idea")
-
-        if self.find_tracebacks(body):
-            self.debug(msg="Traceback found")
-            self.issue.add_desired_label(name="traceback")
-
-        if self.find_py_files(body):
-            self.debug(msg="python file found")
-
-        # search for playbooks or yaml?
-        # search for os versions
-        # need a 'ansible --version'  parser... ;-<
-
-    def find_tracebacks(self, body):
-        tbs = find_traceback.find_tracebacks(body)
-        self.tracebacks.extend(tbs)
-        log.debug('find_tracebacks: %s', tbs)
-        if tbs:
-            return True
-        return False
-
-    def find_py_files(self, buffer):
-        py_file_re = r"""ansible(\S*?\.py)[\s+?:\\\"]"""
-        matches = re.findall(py_file_re, buffer, flags=re.M)
-        log.debug("find_py_files matches=%s", matches)
-        if matches:
-            print(buffer)
-            return True
-        return False
-
-    def process_comments(self):
-        """ Processes PR comments for matching criteria for adding labels"""
-        module_maintainers = self.maintainers.for_issue(self.issue)
-        comments = self.get_comments()
-
-        self.debug(msg="--- START Processing Comments:")
-
-        # TODO: check for tracebacks
-        #       check for reference to other bug trackers
-
-        # split into methods ala self.add_labels_by_gitref
-        for comment in comments:
-
-            # Is the last useful comment from a bot user?  Then we've got a
-            # potential timeout case. Let's explore!
-            if comment.user.login in BOTLIST:
-
-                self.debug(msg="%s is in botlist: " % comment.user.login)
-
-                today = datetime.today()
-                time_delta = today - comment.created_at
-                comment_days_old = time_delta.days
-
-                self.debug(msg="Days since last bot comment: %s" %
-                           comment_days_old)
-
-                # TODO: something useful
-                if comment_days_old > 14:
-                    pass
-
-                self.debug(msg="STATUS: no useful state change since last pass"
-                           "( %s )" % comment.user.login)
-                break
-
-            if (comment.user.login in module_maintainers or
-              comment.user.login.lower() in module_maintainers):
-                self.debug(msg="%s is module maintainer commented on %s." %
-                           (comment.user.login, comment.created_at))
-
-                # Look for 'fixed in', 'regression' 'dupe'
-
-                if "needs_info" in comment.body:
-                    self.debug(msg="...said needs_info!")
-                    self.issue.add_desired_label(name="needs_info")
-
-                if "close_me" in comment.body:
-                    self.debug(msg="...said close_me!")
-                    self.issue.add_desired_label(name="pending_action_close_me")
-                    break
-
-            if comment.user.login == self.issue.get_submitter():
-                self.debug(msg="%s is Issue submitter commented on %s." %
-                           (comment.user.login, comment.created_at))
-
-            if (comment.user.login not in BOTLIST and
-              self.is_ansible_member(comment.user.login)):
-
-                self.debug(msg="%s is a ansible member" % comment.user.login)
-
-                if "needs_info" in comment.body:
-                    self.debug(msg="...said needs_info!")
-                    self.issue.add_desired_label(name="needs_info")
-                    break
-
-            if self.find_tracebacks(comment.body):
-                self.debug("found tracebacks in comment")
-                self.issue.add_desired_label(name="traceback")
-
-            if self.find_py_files(comment.body):
-                self.debug("found py files in comment")
-
-        self.debug(msg="--- END Processing Comments")
+    def add_labels_by_issue_text(self):
+        """Adds labels by issue text"""
+        body_processor = IssueProcessBody(issue=self.issue,
+                                          maintainers=self.maintainers,
+                                          team_members=self.get_team_members())
+        desired_labels = body_processor.process()
+        return desired_labels
 
 
 class TriagePullRequest(BaseTriageIssue):
@@ -816,7 +877,7 @@ class TriagePullRequest(BaseTriageIssue):
         self.process_comments()
         self.add_desired_labels_for_not_mergeable()
         self.add_desired_label_by_build_state()
-        self.add_labels_by_issue_type()
+        self.add_labels_by_issue_text()
 
     def add_desired_labels_by_namespace(self):
         """Adds labels regarding module namespaces.
@@ -829,7 +890,7 @@ class TriagePullRequest(BaseTriageIssue):
                 if key == namespace:
                     self.issue.add_desired_label(value)
 
-    def add_labels_by_issue_type(self):
+    def add_labels_by_issue_text(self):
         """Adds labels by issue type"""
         body = self.issue.instance.body
 
@@ -1136,6 +1197,7 @@ def main():
                         help="Don't change any pull requests.")
     args = parser.parse_args()
 
+    team = TEAM
     logging.getLogger('github.Requester').setLevel(logging.INFO)
 
     if args.pr and args.start_at:
@@ -1164,8 +1226,10 @@ def main():
             always_pause=args.pause,
             force=args.force,
             dry_run=args.dry_run,
-            maintainers=maintainers
+            maintainers=maintainers,
+            team=team
         )
+
     if args.issue or args.issues:
         triage = TriageIssue(
             verbose=args.verbose,
@@ -1178,7 +1242,8 @@ def main():
             always_pause=args.pause,
             force=args.force,
             dry_run=args.dry_run,
-            maintainers=maintainers
+            maintainers=maintainers,
+            team=team
         )
 
     triage.run()
