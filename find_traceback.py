@@ -17,7 +17,7 @@ def unescape_newlines(body):
     # lines = body.split('\\n')
     # body = '\n'.join(lines)
     # log.debug('AFTER: %s', body)
-    return body.decode('string_escape')
+    return body.encode('unicode_escape')
 
 
 def find_tracebacks(body):
@@ -26,11 +26,6 @@ def find_tracebacks(body):
     #       -or- patch tbgrep to do the same
 
     body = unescape_newlines(body)
-
-    print '-- -- --'
-    print(body)
-    print '-- -- --'
-    print
 
     tracebacks = tbgrep.tracebacks_from_lines(body.splitlines())
 

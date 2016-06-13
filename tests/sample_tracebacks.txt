@@ -1,0 +1,79 @@
+Loaded callback minimal of type stdout, v2.0
+<ansible-target-host> ESTABLISH SSH CONNECTION FOR USER: root
+<ansible-target-host> SSH: EXEC ssh -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r ansible-target-host '/bin/sh -c '"'"'( umask 77 && mkdir -p "` echo $HOME/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791 `" && echo "` echo $HOME/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791 `" )'"'"''
+<ansible-target-host> PUT /tmp/tmpDOSaTv TO /root/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791/setup
+<ansible-target-host> SSH: EXEC sftp -b - -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r '[ansible-target-host]'
+<ansible-target-host> ESTABLISH SSH CONNECTION FOR USER: root
+<ansible-target-host> SSH: EXEC ssh -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r -tt ansible-target-host '/bin/sh -c '"'"'LANG=en_GB.UTF-8 LC_ALL=en_GB.UTF-8 LC_MESSAGES=en_GB.UTF-8 /usr/bin/python /root/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791/setup'"'"''
+ansible-target-host | FAILED! => {
+    "changed": false,
+    "failed": true,
+    "invocation": {
+        "module_name": "setup"
+    },
+    "module_stderr": "OpenSSH_7.2p2 Debian-2, OpenSSL 1.0.2g  1 Mar 2016\r\ndebug1: Reading configuration data /home/infernix/.ssh/config\r\ndebug1: /home/infernix/.ssh/config line 27: Applying options for *\r\ndebug1: Reading configuration data /etc/ssh/ssh_config\r\ndebug1: /etc/ssh/ssh_config line 19: Applying options for *\r\ndebug1: auto-mux: Trying existing master\r\ndebug2: fd 3 setting O_NONBLOCK\r\ndebug2: mux_client_hello_exchange: master version 4\r\ndebug3: mux_client_forwards: request forwardings: 0 local, 0 remote\r\ndebug3: mux_client_request_session: entering\r\ndebug3: mux_client_request_alive: entering\r\ndebug3: mux_client_request_alive: done pid = 18985\r\ndebug3: mux_client_request_session: session request sent\r\ndebug1: mux_client_request_session: master session id: 2\r\ndebug3: mux_client_read_packet: read header failed: Broken pipe\r\ndebug2: Received exit status from master 1\r\nShared connection to ansible-target-host closed.\r\n",
+    "module_stdout": "Traceback (most recent call last):\r\n  File \"/tmp/ansible_56STFM/ansible_module_setup.py\", line 127, in <module>\r\n    main()\r\n  File \"/tmp/ansible_56STFM/ansible_module_setup.py\", line 117, in main\r\n    supports_check_mode = True,\r\n  File \"/usr/lib/pymodules/python2.7/ansible/module_utils/basic.py\", line 533, in __init__\r\n    self.params = self._load_params()\r\n  File \"/usr/lib/pymodules/python2.7/ansible/module_utils/basic.py\", line 1351, in _load_params\r\n    params = json_dict_unicode_to_bytes(json.loads(MODULE_COMPLEX_ARGS))\r\n  File \"/usr/lib/python2.7/json/__init__.py\", line 338, in loads\r\n    return _default_decoder.decode(s)\r\n  File \"/usr/lib/python2.7/json/decoder.py\", line 366, in decode\r\n    obj, end = self.raw_decode(s, idx=_w(s, 0).end())\r\n  File \"/usr/lib/python2.7/json/decoder.py\", line 384, in raw_decode\r\n    raise ValueError(\"No JSON object could be decoded\")\r\nValueError: No JSON object could be decoded\r\n",
+    "msg": "MODULE FAILURE",
+    "parsed": false
+}```
+
+
+Loaded callback minimal of type stdout, v2.0
+ESTABLISH SSH CONNECTION FOR USER: root
+SSH: EXEC ssh -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r ansible-target-host '/bin/sh -c '"'"'( umask 77 && mkdir -p "echo $HOME/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791" && echo "echo $HOME/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791" )'"'"''
+PUT /tmp/tmpDOSaTv TO /root/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791/setup
+SSH: EXEC sftp -b - -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r '[ansible-target-host]'
+ESTABLISH SSH CONNECTION FOR USER: root
+SSH: EXEC ssh -C -vvv -o ControlMaster=auto -o ControlPersist=60s -o KbdInteractiveAuthentication=no -o PreferredAuthentications=gssapi-with-mic,gssapi-keyex,hostbased,publickey -o PasswordAuthentication=no -o User=root -o ConnectTimeout=10 -o ControlPath=/home/infernix/.ansible/cp/ansible-ssh-%h-%p-%r -tt ansible-target-host '/bin/sh -c '"'"'LANG=en_GB.UTF-8 LC_ALL=en_GB.UTF-8 LC_MESSAGES=en_GB.UTF-8 /usr/bin/python /root/.ansible/tmp/ansible-tmp-1465217692.09-264707081140791/setup'"'"''
+ansible-target-host | FAILED! => {
+"changed": false,
+"failed": true,
+"invocation": {
+"module_name": "setup"
+},
+"module_stderr": "OpenSSH_7.2p2 Debian-2, OpenSSL 1.0.2g 1 Mar 2016\r\ndebug1: Reading configuration data /home/infernix/.ssh/config\r\ndebug1: /home/infernix/.ssh/config line 27: Applying options for *\r\ndebug1: Reading configuration data /etc/ssh/ssh_config\r\ndebug1: /etc/ssh/ssh_config line 19: Applying options for *\r\ndebug1: auto-mux: Trying existing master\r\ndebug2: fd 3 setting O_NONBLOCK\r\ndebug2: mux_client_hello_exchange: master version 4\r\ndebug3: mux_client_forwards: request forwardings: 0 local, 0 remote\r\ndebug3: mux_client_request_session: entering\r\ndebug3: mux_client_request_alive: entering\r\ndebug3: mux_client_request_alive: done pid = 18985\r\ndebug3: mux_client_request_session: session request sent\r\ndebug1: mux_client_request_session: master session id: 2\r\ndebug3: mux_client_read_packet: read header failed: Broken pipe\r\ndebug2: Received exit status from master 1\r\nShared connection to ansible-target-host closed.\r\n",
+"module_stdout": "Traceback (most recent call last):\r\n File \"/tmp/ansible_56STFM/ansible_module_setup.py\", line 127, in \r\n main()\r\n File \"/tmp/ansible_56STFM/ansible_module_setup.py\", line 117, in main\r\n supports_check_mode = True,\r\n File \"/usr/lib/pymodules/python2.7/ansible/module_utils/basic.py\", line 533, in init\r\n self.params = self.load_params()\r\n File \"/usr/lib/pymodules/python2.7/ansible/module_utils/basic.py\", line 1351, in load_params\r\n params = json_dict_unicode_to_bytes(json.loads(MODULE_COMPLEX_ARGS))\r\n File \"/usr/lib/python2.7/json/__init.py\", line 338, in loads\r\n return _default_decoder.decode(s)\r\n File \"/usr/lib/python2.7/json/decoder.py\", line 366, in decode\r\n obj, end = self.raw_decode(s, idx=_w(s, 0).end())\r\n File \"/usr/lib/python2.7/json/decoder.py\", line 384, in raw_decode\r\n raise ValueError(\"No JSON object could be decoded\")\r\nValueError: No JSON object could be decoded\r\n",
+"msg": "MODULE FAILURE",
+"parsed": false
+}
+
+
+Traceback (most recent call last):
+  File "/usr/bin/ansible-playbook", line 324, in <module>
+    sys.exit(main(sys.argv[1:]))
+  File "/usr/bin/ansible-playbook", line 157, in main
+    inventory = ansible.inventory.Inventory(options.inventory, vault_password=vault_pass)
+  File "/usr/lib/python2.7/site-packages/ansible/inventory/__init__.py", line 100, in __init__
+    self.parser = InventoryDirectory(filename=host_list)
+  File "/usr/lib/python2.7/site-packages/ansible/inventory/dir.py", line 58, in __init__
+    parser = InventoryParser(filename=fullpath)
+  File "/usr/lib/python2.7/site-packages/ansible/inventory/ini.py", line 43, in __init__
+    self._parse()
+  File "/usr/lib/python2.7/site-packages/ansible/inventory/ini.py", line 47, in _parse
+    self._parse_base_groups()
+  File "/usr/lib/python2.7/site-packages/ansible/inventory/ini.py", line 108, in _parse_base_groups
+    tokens = shlex.split(line)
+  File "/usr/lib64/python2.7/shlex.py", line 279, in split
+    return list(lex)
+  File "/usr/lib64/python2.7/shlex.py", line 269, in next
+    token = self.get_token()
+  File "/usr/lib64/python2.7/shlex.py", line 96, in get_token
+    raw = self.read_token()
+  File "/usr/lib64/python2.7/shlex.py", line 172, in read_token
+    raise ValueError, "No closing quotation"
+ValueError: No closing quotation
+
+
+Traceback (most recent call last):\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 282, in <module>\n    main()\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 273, in main\n    do_operation(module)\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 202, in do_operation\n    vm = module.get_vm(vapp_name, vm_name)\n  File \"/tmp/ansible_4OJU7G/ansible_modlib.zip/ansible/module_utils/vca.py\", line 106, in get_vm\nNameError: global name 'children' is not defined\n", "module_stdout": "", "msg": "MODULE FAILURE", "parsed": false}
+
+
+TASK [Power on VM] ************************************
+task path: /home/User/vmwaretesting/infrastructure/ansible/roles/vsphere/tasks/restart-vm.yml:26
+<10.10.1.1> ESTABLISH LOCAL CONNECTION FOR USER: User
+<10.10.1.1> EXEC /bin/sh -c '( umask 77 && mkdir -p "` echo $HOME/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165 `" && echo ansible-tmp-1463483836.84-68748809697165="` echo $HOME/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165 `" )'
+<10.10.1.1> PUT /tmp/tmparwucp TO /home/User/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165/vca_vapp.py
+<10.10.1.1> EXEC /bin/sh -c 'chmod -R u+x /home/User/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165/'
+<10.10.1.1> EXEC /bin/sh -c 'LANG=en_GB.UTF-8 LC_ALL=en_GB.UTF-8 LC_MESSAGES=en_GB.UTF-8 /usr/bin/python /home/User/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165/vca_vapp.py; rm -rf "/home/User/.ansible/tmp/ansible-tmp-1463483836.84-68748809697165/" > /dev/null 2>&1'
+fatal: [10.10.1.1]: FAILED! => {"changed": false, "failed": true, "invocation": {"module_name": "vca_vapp"}, "module_stderr": "/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:318: SNIMissingWarning: An HTTPS request has been made, but the SNI (Subject Name Indication) extension to TLS is not available on this platform. This may cause the server to present an incorrect TLS certificate, which can cause validation failures. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#snimissingwarning.\n  SNIMissingWarning\n/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:122: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.\n  InsecurePlatformWarning\n/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:122: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.\n  InsecurePlatformWarning\n/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:122: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.\n  InsecurePlatformWarning\n/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:122: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.\n  InsecurePlatformWarning\n/usr/local/lib/python2.7/dist-packages/requests/packages/urllib3/util/ssl_.py:122: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. You can upgrade to a newer version of Python to solve this. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.\n  InsecurePlatformWarning\nTraceback (most recent call last):\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 282, in <module>\n    main()\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 273, in main\n    do_operation(module)\n  File \"/tmp/ansible_4OJU7G/ansible_module_vca_vapp.py\", line 202, in do_operation\n    vm = module.get_vm(vapp_name, vm_name)\n  File \"/tmp/ansible_4OJU7G/ansible_modlib.zip/ansible/module_utils/vca.py\", line 106, in get_vm\nNameError: global name 'children' is not defined\n", "module_stdout": "", "msg": "MODULE FAILURE", "parsed": false}
+
+

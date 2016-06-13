@@ -21,17 +21,21 @@ try:
     import argparse
 except ImportError:
     print('argparse is required')
+
 import logging
 import os
+# import shelve
+import re
 import sys
 import time
 from datetime import datetime
+from collections import defaultdict
 
 from github import Github
 
-# traceback finder. 'pip install tbgrep'
-# https://github.com/lmacken/tbgrep
-import tbgrep
+import find_traceback
+import github_helpers
+
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -123,8 +127,8 @@ class TriageError(Exception):
 # TODO: There should probably be a base class here that
 #       Issue and PullRequest subclass
 
-class Issue(object):
-    issue_type_name = 'Issue'
+class BaseIssue(object):
+    issue_type_name = 'BaseIssue'
     alias_labels = ISSUE_ALIAS_LABELS
     mutually_exclusive_labels = ISSUE_MUTUALLY_EXCLUSIVE_LABELS
     manual_interaction_labels = ISSUE_MANUAL_INTERACTION_LABELS
@@ -133,6 +137,7 @@ class Issue(object):
     def __init__(self, repo, number=None, issue=None):
         self.repo = repo
 
+        # TODO, rename self.instance to self.gh_issue or gh_instance
         if not issue:
             self.instance = self._get_issue_type_instance(number)
         else:
@@ -156,10 +161,6 @@ class Issue(object):
     def get_submitter(self):
         """Returns the PR submitter"""
         return self.instance.user.login
-
-    def get_filenames(self):
-        # TODO: do something clever
-        return []
 
     # shared
     def is_labeled_for_interaction(self):
@@ -193,11 +194,10 @@ class Issue(object):
             self.current_comments = self.instance.get_comments().reversed
         return self.current_comments
 
-    def is_a_wip(self):
-        """Return True if PR start with [WIP] in title"""
-        return (self.instance.title.startswith("[WIP]") or
-              self.instance.title.startswith("WIP:") or
-              self.instance.title.startswith("WIP "))
+    # shared
+    def get_events(self):
+        """Returns all issue events."""
+        return self.instance.get_events()
 
     # shared
     def resolve_labels(self, desired_label):
@@ -246,10 +246,18 @@ class Issue(object):
         """ Adds a comment to the PR using the GitHub API"""
         self.get_issue().create_comment(comment)
 
+
+class Issue(BaseIssue):
+    issue_type_name = 'Issue'
+    alias_labels = ISSUE_ALIAS_LABELS
+    mutually_exclusive_labels = ISSUE_MUTUALLY_EXCLUSIVE_LABELS
+    manual_interaction_labels = ISSUE_MANUAL_INTERACTION_LABELS
+    module_namespace_labels = MODULE_NAMESPACE_LABELS
+
     def __str__(self):
-        lines = ["%s #%s: %s" % (self.issue_type_name, self.issue.number, (self.issue.instance.title).encode('ascii','ignore'))]
-        lines.append("Created at %s" % self.issue.instance.created_at)
-        lines.append("Updated at %s" % self.issue.instance.updated_at)
+        lines = ["%s #%s: %s" % (self.issue_type_name, self.issue.number, (self.instance.title).encode('ascii','ignore'))]
+        lines.append("Created at %s" % self.instance.created_at)
+        lines.append("Updated at %s" % self.instance.updated_at)
         return '\n'.join(lines)
 
     def __repr__(self):
@@ -259,8 +267,12 @@ class Issue(object):
 
         return '%s(repo=%s, number=%s%s)' % (self.__class__.__name__, self.repo, self.number, issue_blurb)
 
+    def get_filenames(self):
+        # TODO: do something clever (tracebacks, task ids in snippets, etc)
+        return []
 
-class PullRequest(Issue):
+
+class PullRequest(BaseIssue):
     issue_type_name = 'Pull Request'
     alias_labels = PR_ALIAS_LABELS
     mutually_exclusive_labels = PR_MUTUALLY_EXCLUSIVE_LABELS
@@ -318,14 +330,80 @@ class PullRequest(Issue):
         """Returns base ref of PR"""
         return self.instance.base.ref
 
+    def is_a_wip(self):
+        """Return True if PR start with [WIP] in title"""
+        return (self.instance.title.startswith("[WIP]") or
+              self.instance.title.startswith("WIP:") or
+              self.instance.title.startswith("WIP "))
+
+    def __str__(self):
+        lines = ["%s #%s: %s" % (self.issue_type_name, self.issue.number, (self.instance.title).encode('ascii','ignore'))]
+        lines.append("Created at %s" % self.instance.created_at)
+        lines.append("Updated at %s" % self.instance.updated_at)
+        return '\n'.join(lines)
+
+    def __repr__(self):
+        issue_blurb = ''
+        if self.issue:
+            issue_blurb = ',issue=%s' % self.issue
+
+        return '%s(repo=%s, number=%s%s)' % (self.__class__.__name__, self.repo, self.number, issue_blurb)
+
+
+# TODO: create this once
+class Maintainers(object):
+    def __init__(self, maintainers_file=None):
+        self.maintainers_file = maintainers_file
+        self.maintainers = {}
+
+    def for_issue(self, issue):
+        """Return a set of maintainer user names of maintainers addressed by this issue.
+
+        Checks issue.get_filenames(), and finds all the maintainers for all the paths."""
+        filenames = issue.get_filenames()
+        by_filename = self.for_paths(filenames)
+        maintainers = set([])
+        for maintainer_list in by_filename.values():
+            maintainers.update(maintainer_list)
+
+        return maintainers
+
+    def for_path(self, path):
+        module_maintainers = set([])
+        module_maintainers.update(self.maintainers.get(path, []))
+        return module_maintainers
+
+    def for_paths(self, paths=None):
+        paths = paths or []
+        path_to_maintainers = defaultdict(set)
+        for path in paths:
+            path_to_maintainers[path].update(self.for_path(path))
+        return path_to_maintainers
+
+    # Seperate class
+    def load(self):
+        """Reads all known maintainers from files and their owner namespace"""
+        self.maintainers = self._load(self.maintainers_file)
+
+    def _load(self, filename):
+        maintainers = {}
+        with open(self.maintainers_file) as f:
+            for line in f:
+                owner_space = (line.split(': ')[0]).strip()
+                maintainers_string = (line.split(': ')[-1]).strip()
+                maintainers[owner_space] = maintainers_string.split(' ')
+        return maintainers
+
+
 # TODO: Could also use a base super class here
 
-class TriageIssue:
+class BaseTriageIssue(object):
     issue_type_class = Issue
 
     def __init__(self, verbose=None, github_user=None, github_pass=None,
                  github_token=None, github_repo=None, number=None,
-                 start_at=None, always_pause=False, force=False, dry_run=False):
+                 start_at=None, always_pause=False, force=False,
+                 dry_run=False, maintainers=None):
         self.verbose = verbose
         self.github_user = github_user
         self.github_pass = github_pass
@@ -338,20 +416,24 @@ class TriageIssue:
         self.dry_run = dry_run
 
         self.issue = None
-        self.maintainers = {}
-        self.module_maintainers = []
+
+        self.maintainers = maintainers
+        self.tracebacks = []
+
         self.actions = {
             'newlabel': [],
             'unlabel':  [],
             'comments': [],
         }
 
+    # shared
     def _connect(self):
         """Connects to GitHub's API"""
         # TODO: support getting token from os.environ or a config file.
         return Github(login_or_token=self.github_token or self.github_user,
                       password=self.github_pass)
 
+    # shared
     def debug(self, msg=""):
         """Prints debug message if verbosity is given"""
         if self.verbose:
@@ -369,41 +451,22 @@ class TriageIssue:
         user = self._connect().get_user(login)
         return self._connect().get_organization("ansible").has_in_members(user)
 
-    # TODO: once we can guess at which files/modules are involved in an issue
-    #       we could implement this like TriagePullRequest
-    #       The guessing would like involved parsing any playbook snippets, tracebacks,
-    #       and possibly any quoted ansible-playbook output.
-    def get_module_maintainers(self):
-        return []
-
     def get_all(self, repo):
         return repo.get_issues()
 
     def get_comments(self):
         return self.issue.get_comments()
 
-    def find_tracebacks(self, body):
-        # TODO: add a body wrapper object that will convert embedded new lines
-        #       to real new lines, so tbgrep has a better chance of finding them.
-        #       -or- patch tbgrep to do the same
+    def get_events(self):
+        log.debug('self.issue=%s, type(self.issue)=%s  dir=%s', self.issue, type(self.issue), dir(self.issue))
+        return self.issue.get_events()
 
-        tracebacks = tbgrep.tracebacks_from_lines(body.splitlines())
-        for traceback in tracebacks:
-            log.debug('TRACEBACK=%s', traceback)
-        return tracebacks
-
+    # shared
     def render_comment(self, boilerplate=None):
         """Renders templates into comments using the boilerplate as filename"""
-        maintainers = self.module_maintainers
-        if not maintainers:
-            maintainers = ['ansible/core']
+        raise NotImplemented
 
-        submitter = self.issue.get_submitter()
-
-        template = environment.get_template('%s.j2' % boilerplate)
-        comment = template.render(maintainer=maintainers, submitter=submitter)
-        return comment
-
+    # shared
     def create_actions(self):
         """Creates actions from the desired label, unlabel and comment actions
         lists"""
@@ -459,13 +522,214 @@ class TriageIssue:
                 self.actions['unlabel'].append(current_label)
 
         for boilerplate in self.issue.desired_comments:
+            # TODO/FIXME: pass in approriate maintainers
             comment = self.render_comment(boilerplate=boilerplate)
             self.debug(msg=comment)
             self.actions['comments'].append(comment)
 
+    # shared
+    def process_events(self):
+        events = self.get_events()
+        log.debug('start processing events')
+
+        for event_index, event in enumerate(events):
+            log.debug('%s: %s', event_index, github_helpers.IssueEventRepr(event))
+
+        log.debug('end of processing events')
+
+    def process(self):
+        """Processes the Issue"""
+        # clear all actions
+        self.actions = {
+            'newlabel': [],
+            'unlabel':  [],
+            'comments': [],
+        }
+
+        # TODO: this is More or less a issue repr() so move it there
+        # print some general infos about the PR to be processed
+
+        self.keep_current_main_labels()
+        self.add_desired_labels_by_namespace()
+
+        self.add_labels()
+
+        self.create_actions()
+
+        self.report()
+        return self.apply_actions()
+
+    # TODO: repr/str
+    def report(self):
+        # Print the things we processed
+        print("Submitter: %s" % self.issue.get_submitter())
+        print("Maintainers: %s" % ', '.join(self.maintainers.for_issue(self.issue)))
+        print("Current Labels: %s" %
+              ', '.join(self.issue.current_labels))
+        print("Actions: %s" % self.actions)
+
+    def apply_actions(self):
+        # TODO: maybe change to a functional style approach?
+        #       iterate over the actions, filter away dry-run and skipped.
+        #       Maybe provide a callback for the interactive prompting?
+        #
+        #       def confirm_execute_action_callback(self, action, label):
+        #           if self.dry_run:
+        #              return False
+        #           if self.force:
+        #              return True
+        #           confirm_actions = ('newlabel', 'unlabel', 'comments')
+        #           if label in confirm_actions:
+        #              confirmed = self.do_action_prompt()
+        #              return confirmed
+        #
+        if self.dry_run:
+            print('--dry-run is set so skipping actions')
+            log.debug("Would have run the following actions:")
+            for action_type in self.actions:
+                if self.actions[action_type]:
+                    log.debug('action_type=%s action=%s', action_type, self.actions[action_type])
+            return 0
+
+        # TODO: make a Actions class with iter
+        if (self.actions['newlabel'] or self.actions['unlabel'] or
+                self.actions['comments']):
+            if self.force:
+                print("Running actions non-interactive as you forced.")
+                self.execute_actions()
+                return
+            cont = raw_input("Take recommended actions (y/N/a)? ")
+            if cont in ('a', 'A'):
+                return 0
+            if cont in ('Y', 'y'):
+                self.execute_actions()
+        elif self.always_pause:
+            print("Skipping, but pause.")
+            cont = raw_input("Continue (Y/n/a)? ")
+            if cont in ('a', 'A', 'n', 'N'):
+                return 0
+        else:
+            print("Skipping.")
+
+# class Action(object):
+# args may include the issue to run against, and needed params
+#   def __init__(self, *args, **kwargs):
+#   def execute(self):
+#       action specific thing
+#
+
+    def execute_actions(self):
+        """Turns the actions into API calls"""
+        for unlabel in self.actions['unlabel']:
+            self.debug(msg="API Call unlabel: " + unlabel)
+            self.issue.remove_label(label=unlabel)
+        for newlabel in self.actions['newlabel']:
+            self.debug(msg="API Call newlabel: " + newlabel)
+            self.issue.add_label(label=newlabel)
+        for comment in self.actions['comments']:
+            self.debug(msg="API Call comment: " + comment)
+            self.issue.add_comment(comment=comment)
+
+        # for action in self.actions:
+        #    action.execute()
+
+    def run(self):
+        """Starts a triage run"""
+        repo = self._connect().get_repo("ansible/ansible-modules-%s" %
+                                        self.github_repo)
+
+        # TODO: a 'issue_builder' method that does the right thing likely
+        #       makes more sense that self.issue_type_class pointing to the
+        #       right associated issue class
+        if self.number:
+            self.issue = self.issue_type_class(repo=repo,
+                                               number=self.number)
+            self.process()
+        else:
+            issues = self.get_all(repo)
+            for issue in issues:
+                if self.start_at and issue.number > self.start_at:
+                    continue
+                self.issue = self.issue_type_class(repo=repo, issue=issue)
+                self.process()
+
+
+class TriageIssue(BaseTriageIssue):
+    issue_type_class = Issue
+
+    def add_labels(self):
+        # process comments after labels
+        self.process_comments()
+        self.process_events()
+        self.add_labels_by_issue_type()
+        # TODO
+        # self.add_desired_version_by_version_string()
+        # self.add_desired_milestone_by_something_or_another()
+        # self.add_desired_cli_label_by_reproducer_info()
+
+    def add_desired_labels_by_namespace(self):
+        """Adds labels regarding module namespaces.
+
+        Note: For Issues, there are no filenames so this is a no op"""
+
+        for filename in self.issue.get_filenames():
+            namespace = filename.split('/')[0]
+            for key, value in self.module_namespace_labels.iteritems():
+                if key == namespace:
+                    self.issue.add_desired_label(value)
+
+    def add_labels_by_issue_type(self):
+        """Adds labels by issue type"""
+        body = self.issue.instance.body
+
+        if not body:
+            self.debug(msg="Issue has no description")
+            return
+
+        # TODO: This could be generalized and just use a map of 'string_in_body':'type_of_label'
+        if "Bug Report" in body:
+            self.debug(msg="Bug Report Issue")
+            self.issue.add_desired_label(name="bug_report")
+
+        if "Documentation Report" in body:
+            self.debug(msg="Docs Report")
+            self.issue.add_desired_label(name="docs_report")
+
+        if "Feature Idea" in body:
+            self.debug(msg="Feature Idea")
+            self.issue.add_desired_label(name="feature_idea")
+
+        if self.find_tracebacks(body):
+            self.debug(msg="Traceback found")
+            self.issue.add_desired_label(name="traceback")
+
+        if self.find_py_files(body):
+            self.debug(msg="python file found")
+
+        # search for playbooks or yaml?
+        # search for os versions
+        # need a 'ansible --version'  parser... ;-<
+
+    def find_tracebacks(self, body):
+        tbs = find_traceback.find_tracebacks(body)
+        self.tracebacks.extend(tbs)
+        log.debug('find_tracebacks: %s', tbs)
+        if tbs:
+            return True
+        return False
+
+    def find_py_files(self, buffer):
+        py_file_re = r"""ansible(\S*?\.py)[\s+?:\\\"]"""
+        matches = re.findall(py_file_re, buffer, flags=re.M)
+        log.debug("find_py_files matches=%s", matches)
+        if matches:
+            print(buffer)
+            return True
+        return False
+
     def process_comments(self):
         """ Processes PR comments for matching criteria for adding labels"""
-        module_maintainers = self.get_module_maintainers()
+        module_maintainers = self.maintainers.for_issue(self.issue)
         comments = self.get_comments()
 
         self.debug(msg="--- START Processing Comments:")
@@ -527,16 +791,32 @@ class TriageIssue:
                     self.issue.add_desired_label(name="needs_info")
                     break
 
+            if self.find_tracebacks(comment.body):
+                self.debug("found tracebacks in comment")
+                self.issue.add_desired_label(name="traceback")
+
+            if self.find_py_files(comment.body):
+                self.debug("found py files in comment")
+
         self.debug(msg="--- END Processing Comments")
 
+
+class TriagePullRequest(BaseTriageIssue):
+    issue_type_class = PullRequest
+
+    def get_all(self, repo):
+        return repo.get_pulls()
+
+    # NOTE: add_labels is a misnomer, really means 'check the state, figure out what we need to do, build the
+    #       list of actions, etc.
     def add_labels(self):
+        self.add_desired_labels_by_maintainers()
+        self.add_desired_labels_by_gitref()
         # process comments after labels
         self.process_comments()
+        self.add_desired_labels_for_not_mergeable()
+        self.add_desired_label_by_build_state()
         self.add_labels_by_issue_type()
-        # TODO
-        # self.add_desired_version_by_version_string()
-        # self.add_desired_milestone_by_something_or_another()
-        # self.add_desired_cli_label_by_reproducer_info()
 
     def add_desired_labels_by_namespace(self):
         """Adds labels regarding module namespaces.
@@ -549,149 +829,37 @@ class TriageIssue:
                 if key == namespace:
                     self.issue.add_desired_label(value)
 
-    def process(self):
-        """Processes the Issue"""
-        # clear all actions
-        self.actions = {
-            'newlabel': [],
-            'unlabel':  [],
-            'comments': [],
-        }
-        # clear module maintainers
-        self.module_maintainers = []
-
-        # TODO: this is More or less a issue repr() so move it there
-        # print some general infos about the PR to be processed
-
-        self.keep_current_main_labels()
-        self.add_desired_labels_by_namespace()
-
-        if self.issue.is_a_wip():
-            self.debug(msg="PR is a work-in-progress")
-            self.issue.add_desired_label(name="work_in_progress")
-        else:
-            self.add_labels()
-
-        self.create_actions()
-
-        self.report()
-        return self.apply_actions()
-
     def add_labels_by_issue_type(self):
         """Adds labels by issue type"""
         body = self.issue.instance.body
 
+        # TODO: similar to process_comment, this takes the issue body
+        #       and figures out current state and the actions needed to
+        #       get it to the desired state.
         if not body:
-            self.debug(msg="Issue has no description")
+            self.debug(msg="PR has no description")
             return
 
-        # TODO: This could be generalized and just use a map of 'string_in_body':'type_of_label'
-        if "Bug Report" in body:
-            self.debug(msg="Bug Report Issue")
-            self.issue.add_desired_label(name="bug_report")
+        if self.issue.is_a_wip():
+            self.debug(msg="PR is a work-in-progress")
+            self.issue.add_desired_label(name="work_in_progress")
 
-        if "Documentation Report" in body:
-            self.debug(msg="Docs Report")
-            self.issue.add_desired_label(name="docs_report")
+        if ("New Module Pull Request" in body or
+          "new_plugin" in self.issue.desired_labels):
+            self.debug(msg="New Module Pull Request")
+            return
 
-        if "Feature Idea" in body:
-            self.debug(msg="Feature Idea")
-            self.issue.add_desired_label(name="feature_idea")
+        if "Bugfix Pull Request" in body:
+            self.debug(msg="Bugfix Pull Request")
+            self.issue.add_desired_label(name="bugfix_pull_request")
 
-        if self.find_tracebacks(body):
-            self.debug(msg="Traceback found")
-            self.issue.add_desired_label(name="traceback")
+        if "Docs Pull Request" in body:
+            self.debug(msg="Docs Pull Request")
+            self.issue.add_desired_label(name="docs_pull_request")
 
-        # search for playbooks or yaml?
-        # search for os versions
-        # need a 'ansible --version'  parser... ;-<
-
-    # TODO: repr/str
-    def report(self):
-        # Print the things we processed
-        print("Submitter: %s" % self.issue.get_submitter())
-        print("Maintainers: %s" % ', '.join(self.get_module_maintainers()))
-        print("Current Labels: %s" %
-              ', '.join(self.issue.current_labels))
-        print("Actions: %s" % self.actions)
-
-    def apply_actions(self):
-        # TODO: maybe change to a functional style approach?
-        #       iterate over the actions, filter away dry-run and skipped.
-        #       Maybe provide a callback for the interactive prompting?
-        #
-        #       def confirm_execute_action_callback(self, action, label):
-        #           if self.dry_run:
-        #              return False
-        #           if self.force:
-        #              return True
-        #           confirm_actions = ('newlabel', 'unlabel', 'comments')
-        #           if label in confirm_actions:
-        #              confirmed = self.do_action_prompt()
-        #              return confirmed
-        #
-        if self.dry_run:
-            print('--dry-run is set so skipping actions')
-            log.debug("Would have run the following actions:")
-            for action_type in self.actions:
-                if self.actions[action_type]:
-                    log.debug('action_type=%s action=%s', action_type, self.actions[action_type])
-            return 0
-
-        if (self.actions['newlabel'] or self.actions['unlabel'] or
-                self.actions['comments']):
-            if self.force:
-                print("Running actions non-interactive as you forced.")
-                self.execute_actions()
-                return
-            cont = raw_input("Take recommended actions (y/N/a)? ")
-            if cont in ('a', 'A'):
-                return 0
-            if cont in ('Y', 'y'):
-                self.execute_actions()
-        elif self.always_pause:
-            print("Skipping, but pause.")
-            cont = raw_input("Continue (Y/n/a)? ")
-            if cont in ('a', 'A', 'n', 'N'):
-                return 0
-        else:
-            print("Skipping.")
-
-    def execute_actions(self):
-        """Turns the actions into API calls"""
-        for unlabel in self.actions['unlabel']:
-            self.debug(msg="API Call unlabel: " + unlabel)
-            self.issue.remove_label(label=unlabel)
-        for newlabel in self.actions['newlabel']:
-            self.debug(msg="API Call newlabel: " + newlabel)
-            self.issue.add_label(label=newlabel)
-        for comment in self.actions['comments']:
-            self.debug(msg="API Call comment: " + comment)
-            self.issue.add_comment(comment=comment)
-
-    def run(self):
-        """Starts a triage run"""
-        repo = self._connect().get_repo("ansible/ansible-modules-%s" %
-                                        self.github_repo)
-
-        # TODO: a 'issue_builder' method that does the right thing likely
-        #       makes more sense that self.issue_type_class pointing to the
-        #       right associated issue class
-        if self.number:
-            self.issue = self.issue_type_class(repo=repo,
-                                               number=self.number)
-            self.process()
-        else:
-            issues = self.get_all(repo)
-            for issue in issues:
-                if self.start_at and issue.number > self.start_at:
-                    continue
-                self.issue = self.issue_type_class(repo=repo, issue=issue)
-                self.process()
-
-
-class TriagePullRequest(TriageIssue):
-    issue_type_class = PullRequest
+        if "Feature Pull Request" in body:
+            self.debug(msg="Feature Pull Request")
+            self.issue.add_desired_label(name="feature_pull_request")
 
     def add_desired_labels_for_not_mergeable(self):
         """Adds labels for not mergeable conditions"""
@@ -700,33 +868,6 @@ class TriagePullRequest(TriageIssue):
             self.issue.add_desired_label(name="needs_revision_not_mergeable")
         else:
             self.debug(msg="PR is mergeable")
-
-    def _get_maintainers(self):
-        """Reads all known maintainers from files and their owner namespace"""
-        if not self.maintainers:
-            f = open(MAINTAINERS_FILES[self.github_repo])
-            for line in f:
-                owner_space = (line.split(': ')[0]).strip()
-                maintainers_string = (line.split(': ')[-1]).strip()
-                self.maintainers[owner_space] = maintainers_string.split(' ')
-            f.close()
-        return self.maintainers
-
-    def get_module_maintainers(self):
-        """Returns the dict of maintainers using the key as owner namespace"""
-        if self.module_maintainers:
-            return self.module_maintainers
-
-        for owner_space, maintainers in self._get_maintainers().iteritems():
-            for filename in self.issue.get_filenames():
-                if owner_space in filename:
-                    for maintainer in maintainers:
-                        if maintainer not in self.module_maintainers:
-                            self.module_maintainers.extend(maintainers)
-        return self.module_maintainers
-
-    def get_all(self, repo):
-        return repo.get_pulls()
 
     def add_desired_labels_by_maintainers(self):
         """Adds labels regarding maintainer infos"""
@@ -796,15 +937,6 @@ class TriagePullRequest(TriageIssue):
                 self.issue.add_desired_label(name="needs_revision")
         else:
             self.debug(msg="No build state")
-
-    def add_labels(self):
-        self.add_desired_labels_by_maintainers()
-        self.add_desired_labels_by_gitref()
-        # process comments after labels
-        self.process_comments()
-        self.add_desired_labels_for_not_mergeable()
-        self.add_desired_label_by_build_state()
-        self.add_labels_by_issue_type()
 
     def process_comments(self):
         """ Processes PR comments for matching criteria for adding labels"""
@@ -956,34 +1088,15 @@ class TriagePullRequest(TriageIssue):
 
         self.debug(msg="--- END Processing Comments")
 
-    def add_labels_by_issue_type(self):
-        """Adds labels by issue type"""
-        body = self.issue.instance.body
+    def render_comment(self, maintainers=None, boilerplate=None):
+        """Renders templates into comments using the boilerplate as filename"""
+        maintainers = maintainers or ['ansible/core']
 
-        # TODO: similar to process_comment, this takes the issue body
-        #       and figures out current state and the actions needed to
-        #       get it to the desired state.
-        if not body:
-            self.debug(msg="PR has no description")
-            return
+        submitter = self.issue.get_submitter()
 
-        if ("New Module Pull Request" in body or
-          "new_plugin" in self.issue.desired_labels):
-            self.debug(msg="New Module Pull Request")
-            return
-
-        if "Bugfix Pull Request" in body:
-            self.debug(msg="Bugfix Pull Request")
-            self.issue.add_desired_label(name="bugfix_pull_request")
-
-        if "Docs Pull Request" in body:
-            self.debug(msg="Docs Pull Request")
-            self.issue.add_desired_label(name="docs_pull_request")
-
-        if "Feature Pull Request" in body:
-            self.debug(msg="Feature Pull Request")
-            self.issue.add_desired_label(name="feature_pull_request")
-
+        template = environment.get_template('%s.j2' % boilerplate)
+        comment = template.render(maintainer=maintainers, submitter=submitter)
+        return comment
 
 def main():
     parser = argparse.ArgumentParser(description="Triage various PR queues "
@@ -1023,6 +1136,8 @@ def main():
                         help="Don't change any pull requests.")
     args = parser.parse_args()
 
+    logging.getLogger('github.Requester').setLevel(logging.INFO)
+
     if args.pr and args.start_at:
         raise TriageError("Error: Mutually exclusive: --start-at and --pr")
 
@@ -1031,6 +1146,11 @@ def main():
 
     log.debug('args.prs=%s', args.prs)
     log.debug('args.issue=%s', args.issues)
+
+    # shelf = shelve.open(filename='shelve.data', flag='c', protocol=2)
+
+    maintainers = Maintainers(maintainers_file=MAINTAINERS_FILES[args.repo])
+    maintainers.load()
 
     if args.pr or args.prs:
         triage = TriagePullRequest(
@@ -1044,6 +1164,7 @@ def main():
             always_pause=args.pause,
             force=args.force,
             dry_run=args.dry_run,
+            maintainers=maintainers
         )
     if args.issue or args.issues:
         triage = TriageIssue(
@@ -1057,6 +1178,7 @@ def main():
             always_pause=args.pause,
             force=args.force,
             dry_run=args.dry_run,
+            maintainers=maintainers
         )
 
     triage.run()
