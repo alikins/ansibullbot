@@ -32,18 +32,18 @@ from datetime import datetime
 from collections import defaultdict
 
 from github import Github
-
 import find_traceback
 import github_helpers
 
 
 from jinja2 import Environment, FileSystemLoader
 
-DEBUG_LOG_FORMAT = "%(asctime)s [%(name)s %(levelname)s] (%(process)d):%(funcName)s:%(lineno)d - %(message)s"
+DEBUG_LOG_FORMAT = "%(asctime)s [%(name)s %(levelname)s] %(funcName)s:%(lineno)d - %(message)s"
 logging.basicConfig(level=logging.DEBUG,
                     format=DEBUG_LOG_FORMAT)
 
-log = logging.getLogger(__name__)
+# FIXME: move to __name__ once this isn't just __main__
+log = logging.getLogger('ansibulbot')
 loader = FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates'))
 environment = Environment(loader=loader, trim_blocks=True)
 
@@ -75,8 +75,15 @@ ISSUE_ALIAS_LABELS = {}
 
 
 MAINTAINERS_FILES = {
+    'ansible': "MAINTAINERS-ANSIBLE.txt",
     'core': "MAINTAINERS-CORE.txt",
     'extras': "MAINTAINERS-EXTRAS.txt",
+}
+
+REPO_NICKNAMES = {
+    'core': 'ansible/ansible-modules-core',
+    'extras': 'ansible/ansible-modules-extras',
+    'ansible': 'ansible/ansible'
 }
 
 # modules having files starting like the key, will get the value label
@@ -120,6 +127,7 @@ ISSUE_MANUAL_INTERACTION_LABELS = []
 BOTLIST = [
     'gregdek',
     'robynbergeron',
+    'alikins',
 ]
 
 class TriageError(Exception):
@@ -133,7 +141,6 @@ class BaseIssue(object):
     alias_labels = ISSUE_ALIAS_LABELS
     mutually_exclusive_labels = ISSUE_MUTUALLY_EXCLUSIVE_LABELS
     manual_interaction_labels = ISSUE_MANUAL_INTERACTION_LABELS
-    module_namespace_labels = MODULE_NAMESPACE_LABELS
 
     def __init__(self, repo, number=None, issue=None):
         self.repo = repo
@@ -144,8 +151,11 @@ class BaseIssue(object):
         else:
             self.instance = issue
 
+        log.debug("self.instance=%s", self.instance)
         self.number = self.instance.number
-        self.issue = self.instance
+
+        # not true for prs
+        self._issue = None
 
         self.current_labels = []
         self.desired_labels = []
@@ -156,6 +166,7 @@ class BaseIssue(object):
         self.filenames = []
 
     def _get_issue_type_instance(self, number):
+        log.debug('Issue._get_i_t_i number=%s', number)
         return self.repo.get_issue(number)
 
     # shared
@@ -171,11 +182,12 @@ class BaseIssue(object):
                 return True
         return False
 
-    def get_issue(self):
+    @property
+    def issue(self):
         """Gets the issue from the GitHub API"""
-        if not self.instance:
-            self.issue = self.repo.get_issue(self.number)
-        return self.issue
+        if not self._issue:
+            self._issue = self.repo.get_issue(self.number)
+        return self._issue
 
     # shared
     def get_current_labels(self):
@@ -183,7 +195,7 @@ class BaseIssue(object):
         pr_labels.
         """
         if not self.current_labels:
-            labels = self.get_issue().labels
+            labels = self.issue.labels
             for label in labels:
                 self.current_labels.append(label.name)
         return self.current_labels
@@ -198,7 +210,7 @@ class BaseIssue(object):
     # shared
     def get_events(self):
         """Returns all issue events."""
-        return self.instance.get_events()
+        return self.issue.get_events()
 
     # shared
     def resolve_labels(self, desired_label):
@@ -235,17 +247,17 @@ class BaseIssue(object):
     # shared
     def add_label(self, label=None):
         """Adds a label to the PR using the GitHub API"""
-        self.get_issue().add_to_labels(label)
+        self.issue.add_to_labels(label)
 
     # shared
     def remove_label(self, label=None):
         """Removes a label from the PR using the GitHub API"""
-        self.get_issue().remove_from_labels(label)
+        self.issue.remove_from_labels(label)
 
     # shared
     def add_comment(self, comment=None):
         """ Adds a comment to the PR using the GitHub API"""
-        self.get_issue().create_comment(comment)
+        self.issue.create_comment(comment)
 
 
 class Issue(BaseIssue):
@@ -253,18 +265,23 @@ class Issue(BaseIssue):
     alias_labels = ISSUE_ALIAS_LABELS
     mutually_exclusive_labels = ISSUE_MUTUALLY_EXCLUSIVE_LABELS
     manual_interaction_labels = ISSUE_MANUAL_INTERACTION_LABELS
-    module_namespace_labels = MODULE_NAMESPACE_LABELS
+
+    def __init__(self, repo, number=None, issue=None):
+        super(PullRequest, self).__init__(repo=repo, number=number, issue=issue)
+        # And issue is a issue, but a pull request has an issue (while also being an issue, but not
+        #  in PyGithub
+        self._issue = self.instance
 
     def __str__(self):
-        lines = ["%s #%s: %s" % (self.issue_type_name, self.issue.number, (self.instance.title).encode('ascii','ignore'))]
+        lines = ["%s #%s: %s" % (self.issue_type_name, self.instance.number, (self.instance.title).encode('ascii','ignore'))]
         lines.append("Created at %s" % self.instance.created_at)
         lines.append("Updated at %s" % self.instance.updated_at)
         return '\n'.join(lines)
 
     def __repr__(self):
         issue_blurb = ''
-        if self.issue:
-            issue_blurb = ',issue=%s' % self.issue
+        if self.instance:
+            issue_blurb = ',issue=%s' % self.instance
 
         return '%s(repo=%s, number=%s%s)' % (self.__class__.__name__, self.repo, self.number, issue_blurb)
 
@@ -281,7 +298,11 @@ class PullRequest(BaseIssue):
 
     def __init__(self, repo, number=None, issue=None):
         super(PullRequest, self).__init__(repo=repo, number=number, issue=issue)
-        self.issue = self.instance.issue
+
+    def _get_issue_type_instance(self, number):
+        ret = self.repo.get_pull(number)
+        log.debug("ret=%s", ret)
+        return ret
 
     def get_filenames(self):
         """Returns all files related to this PR"""
@@ -289,12 +310,6 @@ class PullRequest(BaseIssue):
             for pr_file in self.instance.get_files():
                 self.filenames.append(pr_file.filename)
         return self.filenames
-
-    def get_issue(self):
-        """Gets the issue from the GitHub API"""
-        if not self.issue:
-            self.issue = self.repo.get_issue(self.number)
-        return self.issue
 
     def get_last_commit(self):
         """Returns last commit"""
@@ -338,17 +353,17 @@ class PullRequest(BaseIssue):
               self.instance.title.startswith("WIP "))
 
     def __str__(self):
-        lines = ["%s #%s: %s" % (self.issue_type_name, self.issue.number, (self.instance.title).encode('ascii','ignore'))]
+        lines = ["%s #%s: %s" % (self.issue_type_name, self.instance.number, (self.instance.title).encode('ascii','ignore'))]
         lines.append("Created at %s" % self.instance.created_at)
         lines.append("Updated at %s" % self.instance.updated_at)
         return '\n'.join(lines)
 
     def __repr__(self):
-        issue_blurb = ''
-        if self.issue:
-            issue_blurb = ',issue=%s' % self.issue
+        blurb = ''
+        if self.instance:
+            blurb = ',pr=%s' % self.instance
 
-        return '%s(repo=%s, number=%s%s)' % (self.__class__.__name__, self.repo, self.number, issue_blurb)
+        return '%s(repo=%s, number=%s%s)' % (self.__class__.__name__, self.repo, self.number, blurb)
 
 
 # TODO: create this once
@@ -395,6 +410,7 @@ class Maintainers(object):
                 maintainers[owner_space] = maintainers_string.split(' ')
         return maintainers
 
+
 # TODO: replace with a state machine
 # shortterm goal is just pulling out all the logic that is different between
 # TriageIssue/TriagePullRequest
@@ -408,6 +424,7 @@ class BaseProcessText(object):
         self.module_maintainers = self.maintainers.for_issue(self.issue)
         self.team_members = team_members
         self.tracebacks = []
+        self.versions = []
 
     # TODO: could just be module methods, or something this has-a
     def find_tracebacks(self, body):
@@ -426,6 +443,18 @@ class BaseProcessText(object):
             print(body)
             return True
         return False
+
+    def find_ansible_version(self, body):
+        ansible_version_re = r"""\s+?ansible\s(\d+\.\d+\.\d+\.+.?)?"""
+        # ansible_version_re = r"""ansible\s((\d+\.)+(\d+\.)+(\d+.*?))?"""
+        matches = re.findall(ansible_version_re, body)
+        log.debug("ansible_version matches=%s", matches)
+        if matches:
+            print(matches)
+            self.versions.append(matches[0])
+            return True
+        return False
+
 
 class ProcessComments(BaseProcessText):
     def process(self, comments):
@@ -511,6 +540,7 @@ class IssueProcessComments(ProcessComments):
         log.debug("--- END Processing Comment")
         return desired_labels
 
+
 class IssueProcessBody(BaseProcessText):
     def process(self):
         """ Processes PR comments for matching criteria for adding labels"""
@@ -553,6 +583,10 @@ class IssueProcessBody(BaseProcessText):
         if self.find_py_files(body):
             log.debug("python file found")
 
+        if self.find_ansible_version(body):
+            log.debug("Found ansible version")
+            log.debug("Ansible version=%s", self.versions)
+
         # search for playbooks or yaml?
         # search for os versions
         # need a 'ansible --version'  parser... ;-<
@@ -561,6 +595,7 @@ class IssueProcessBody(BaseProcessText):
 
 class BaseTriageIssue(object):
     issue_type_class = Issue
+    module_namespace_labels = MODULE_NAMESPACE_LABELS
 
     def __init__(self, verbose=None, github_user=None, github_pass=None,
                  github_token=None, github_repo=None, number=None,
@@ -617,14 +652,14 @@ class BaseTriageIssue(object):
         user = self._connect().get_user(login)
         return self._connect().get_organization(self.team).has_in_members(user)
 
-    def get_all(self, repo):
-        return repo.get_issues()
+    def get_all(self, repo, direction=None):
+        return repo.get_issues(direction=direction)
 
     def get_comments(self):
         return self.issue.get_comments()
 
     def get_events(self):
-        log.debug('self.issue=%s, type(self.issue)=%s  dir=%s', self.issue, type(self.issue), dir(self.issue))
+        log.debug('self.issue=%s', self.issue,)
         return self.issue.get_events()
 
     # shared
@@ -696,12 +731,13 @@ class BaseTriageIssue(object):
     # shared
     def process_events(self):
         events = self.get_events()
-        log.debug('start processing events')
+
+        log.debug("start processing events")
 
         for event_index, event in enumerate(events):
             log.debug('%s: %s', event_index, github_helpers.IssueEventRepr(event))
 
-        log.debug('end of processing events')
+        # log.debug('end of processing events')
 
     def process(self):
         """Processes the Issue"""
@@ -801,21 +837,30 @@ class BaseTriageIssue(object):
 
     def run(self):
         """Starts a triage run"""
-        repo = self._connect().get_repo("ansible/ansible-modules-%s" %
-                                        self.github_repo)
+        repo = self._connect().get_repo(self.github_repo)
 
         # TODO: a 'issue_builder' method that does the right thing likely
         #       makes more sense that self.issue_type_class pointing to the
         #       right associated issue class
         if self.number:
+            log.info("Triaging issue/pr #%s", self.number)
             self.issue = self.issue_type_class(repo=repo,
                                                number=self.number)
             self.process()
         else:
-            issues = self.get_all(repo)
+            issues = self.get_all(repo, direction='desc')
+            log.info("Triaging issues/prs starting at #%s", self.start_at)
+            issues_to_triage = []
             for issue in issues:
-                if self.start_at and issue.number > self.start_at:
-                    continue
+
+                # FIXME: I flipped the order here. Need to handle either direction
+                if self.start_at and issue.number < self.start_at:
+                    break
+                issues_to_triage.append(issue)
+
+            log.debug('issues to triage=%s', issues_to_triage)
+            for issue in issues_to_triage:
+                log.info("Triaging issue/pr #%s", issue.number)
                 self.issue = self.issue_type_class(repo=repo, issue=issue)
                 self.process()
 
@@ -873,6 +918,8 @@ class TriagePullRequest(BaseTriageIssue):
     # NOTE: add_labels is a misnomer, really means 'check the state, figure out what we need to do, build the
     #       list of actions, etc.
     def add_labels(self):
+        self.process_events()
+
         self.add_desired_labels_by_maintainers()
         self.add_desired_labels_by_gitref()
         # process comments after labels
@@ -934,7 +981,7 @@ class TriagePullRequest(BaseTriageIssue):
 
     def add_desired_labels_by_maintainers(self):
         """Adds labels regarding maintainer infos"""
-        module_maintainers = self.get_module_maintainers()
+        module_maintainers = self.maintainers.for_issue(self.issue)
         pr_contains_new_file = self.issue.pr_contains_new_file()
 
         if pr_contains_new_file:
@@ -1003,7 +1050,7 @@ class TriagePullRequest(BaseTriageIssue):
 
     def process_comments(self):
         """ Processes PR comments for matching criteria for adding labels"""
-        module_maintainers = self.get_module_maintainers()
+        module_maintainers = self.maintainers.for_issue(self.issue)
         comments = self.get_comments()
 
         self.debug(msg="--- START Processing Comments:")
@@ -1128,8 +1175,10 @@ class TriagePullRequest(BaseTriageIssue):
                         )
                     break
 
+            team_members = self.get_team_members()
+
             if (comment.user.login not in BOTLIST and
-              self.is_ansible_member(comment.user.login)):
+              comment.user.login in team_members):
 
                 self.debug(msg="%s is a ansible member" % comment.user.login)
 
@@ -1167,7 +1216,7 @@ def main():
                                                  "useful if you have commit "
                                                  "access to the repo in "
                                                  "question.)")
-    parser.add_argument("repo", type=str, choices=['core', 'extras'],
+    parser.add_argument("repo", type=str, choices=['ansible', 'core', 'extras'],
                         help="Repo to be triaged")
     parser.add_argument("--gh-user", "-u", type=str,
                         help="Github username or token of triager")
@@ -1216,13 +1265,16 @@ def main():
     maintainers = Maintainers(maintainers_file=MAINTAINERS_FILES[args.repo])
     maintainers.load()
 
+    # expand the repo nickname
+    repo_slug = REPO_NICKNAMES[args.repo]
+
     if args.pr or args.prs:
         triage = TriagePullRequest(
             verbose=args.verbose,
             github_user=args.gh_user,
             github_pass=args.gh_pass,
             github_token=args.gh_token,
-            github_repo=args.repo,
+            github_repo=repo_slug,
             number=args.pr,
             start_at=args.start_at,
             always_pause=args.pause,
@@ -1238,7 +1290,7 @@ def main():
             github_user=args.gh_user,
             github_pass=args.gh_pass,
             github_token=args.gh_token,
-            github_repo=args.repo,
+            github_repo=repo_slug,
             number=args.issue,
             start_at=args.start_at,
             always_pause=args.pause,
